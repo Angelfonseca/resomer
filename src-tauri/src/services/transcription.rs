@@ -13,6 +13,20 @@ use std::path::Path;
 /// grabado (mic mono, o sistema/"ambos" en estéreo a 44.1/48 kHz).
 const WHISPER_SAMPLE_RATE: i32 = 16_000;
 
+/// Duración máxima por fragmento subido al endpoint de transcripción.
+///
+/// La documentación del gateway (api.nan.builders) es explícita: Whisper
+/// corre en CPU a ~1x tiempo real, y para audios de más de 2 minutos "el
+/// proxy puede devolver un 524 (timeout) antes de que termine la
+/// transcripción". El código anterior troceaba a 300s (5 min), muy por
+/// encima de ese límite documentado — probablemente la causa real de los
+/// 500/"Internal Server Error" reportados, no solo un fallo transitorio del
+/// backend. 100s deja margen bajo el límite de 120s.
+///
+/// A mono 16 kHz 16-bit, un fragmento de 100s pesa ~3.2 MB, muy por debajo
+/// del límite de tamaño documentado (25 MB por request).
+const MAX_CHUNK_DURATION_SECS: f32 = 100.0;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TranscriptSegment {
     pub start: f32,
@@ -109,8 +123,8 @@ impl CloudTranscriber {
         Ok((mono_spec, Self::f32_to_i16(&resampled)))
     }
 
-    // Divide audio (ya normalizado a mono 16 kHz) en chunks ≤ 300 segundos,
-    // retornando índices de muestra.
+    // Divide audio (ya normalizado a mono 16 kHz) en chunks de máximo
+    // max_duration_secs, retornando índices de muestra.
     fn chunk_audio_file(
         audio_path: &str,
         max_duration_secs: f32,
@@ -193,7 +207,7 @@ impl CloudTranscriber {
 #[async_trait]
 impl crate::domain::Transcriber for CloudTranscriber {
     async fn transcribe(&self, audio_path: &str) -> Result<String, ResomerError> {
-        let (spec, samples, chunks) = Self::chunk_audio_file(audio_path, 300.0)?;
+        let (spec, samples, chunks) = Self::chunk_audio_file(audio_path, MAX_CHUNK_DURATION_SECS)?;
 
         let mut all_transcripts = vec![];
 
