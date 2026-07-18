@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 
 export interface Meeting {
@@ -11,8 +11,25 @@ export interface Meeting {
 
 export function useMeetings() {
   const [meetings, setMeetings] = useState<Meeting[]>([])
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+
+  // Load meetings from database on mount
+  useEffect(() => {
+    const loadMeetings = async () => {
+      try {
+        const result = await invoke<Meeting[]>("list_meetings")
+        setMeetings(result)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        setError(message)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadMeetings()
+  }, [])
 
   const createMeeting = useCallback(
     async (title: string) => {

@@ -55,6 +55,9 @@ export function StudioView({
   meetings: Meeting[]
   onStartRecording: () => void
 }) {
+  const completedMeetings = meetings.filter((m) => m.state === "completed")
+  const processingMeetings = meetings.filter((m) => m.state !== "completed")
+
   return (
     <div className="mx-auto w-full max-w-4xl space-y-8">
       {/* Hero */}
@@ -108,23 +111,16 @@ export function StudioView({
         ))}
       </div>
 
-      {/* Recent meetings */}
-      <div>
-        <div className="mb-3 flex items-center justify-between">
-          <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-mute">
-            Reuniones recientes
-          </p>
-        </div>
-
-        {meetings.length === 0 ? (
-          <EmptyState
-            icon={<ListMusic />}
-            title="Aún no hay reuniones"
-            description="Cuando grabes tu primera reunión, aparecerá aquí junto con su estado de procesamiento."
-          />
-        ) : (
+      {/* Processing/Recording meetings */}
+      {processingMeetings.length > 0 && (
+        <div>
+          <div className="mb-3">
+            <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-signal">
+              En proceso
+            </p>
+          </div>
           <div className="space-y-2">
-            {meetings.map((meeting) => (
+            {processingMeetings.map((meeting) => (
               <Panel key={meeting.id} className="flex items-center gap-3 px-4 py-3">
                 <StatusDot
                   tone={meetingStateTone[meeting.state]}
@@ -142,8 +138,47 @@ export function StudioView({
               </Panel>
             ))}
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {/* Completed meetings */}
+      {completedMeetings.length > 0 && (
+        <div>
+          <div className="mb-3">
+            <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-done">
+              Completadas
+            </p>
+          </div>
+          <div className="space-y-2">
+            {completedMeetings.map((meeting) => (
+              <Panel
+                key={meeting.id}
+                className="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors hover:bg-panel-hi"
+              >
+                <StatusDot tone={meetingStateTone[meeting.state]} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-ink">{meeting.title}</p>
+                  <p className="font-mono text-[11px] text-ink-mute">
+                    {relativeTime(meeting.created_at)}
+                  </p>
+                </div>
+                <span className="font-mono text-[11px] text-done">
+                  {meetingStateLabel[meeting.state]}
+                </span>
+              </Panel>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {meetings.length === 0 && (
+        <EmptyState
+          icon={<ListMusic />}
+          title="Aún no hay reuniones"
+          description="Cuando grabes tu primera reunión, aparecerá aquí junto con su estado de procesamiento."
+        />
+      )}
     </div>
   )
 }

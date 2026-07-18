@@ -7,7 +7,7 @@ pub mod services;
 pub use error::ResomerError;
 
 // Command implementations (without Tauri annotations - those go in main.rs only)
-use domain::meeting::Meeting;
+use domain::meeting::{Meeting, MeetingState};
 use domain::{AudioRecorder, DiarizationEngine, RecordingSource, Segment, Summarizer, Transcriber, MeetingRepository};
 use infra::config::ConfigManager;
 use infra::keychain::KeychainManager;
@@ -112,7 +112,7 @@ pub fn get_database() -> Result<Arc<MeetingRepositoryImpl>, String> {
 }
 
 pub async fn start_recording(
-    _meeting_id: String,
+    meeting_id: String,
     output_path: String,
     source: String,
 ) -> Result<(), String> {
@@ -130,6 +130,18 @@ pub async fn start_recording(
                 .map_err(|e| format!("Failed to create recordings directory: {}", e))?;
         }
     }
+
+    // Update meeting in BD with audio path
+    let repo = get_database()?;
+    let mut meeting = repo
+        .get(&meeting_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Meeting not found".to_string())?;
+
+    meeting.audio_path = Some(output_path.clone());
+    meeting.state = MeetingState::Recording;
+    repo.update(meeting).await.map_err(|e| e.to_string())?;
 
     let recorder: Arc<dyn AudioRecorder> =
         Arc::new(CpalAudioRecorder::new().map_err(|e| format!("Recorder init failed: {}", e))?);
@@ -252,6 +264,11 @@ pub async fn get_meeting_data(
         transcript,
         summary,
     })
+}
+
+pub async fn list_meetings() -> Result<Vec<Meeting>, String> {
+    let repo = get_database()?;
+    repo.list().await.map_err(|e| e.to_string())
 }
 
 #[derive(Serialize, Deserialize)]

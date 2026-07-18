@@ -5,11 +5,11 @@ use resomer_backend::{
     create_meeting as lib_create_meeting, delete_api_key as lib_delete_api_key,
     diarize_audio as lib_diarize_audio, get_api_key as lib_get_api_key,
     get_meeting_data as lib_get_meeting_data, list_audio_devices as lib_list_audio_devices,
-    pause_recording as lib_pause_recording, save_api_key as lib_save_api_key,
-    save_pipeline_results as lib_save_pipeline_results, start_recording as lib_start_recording,
-    stop_recording as lib_stop_recording, summarize_text as lib_summarize_text,
-    test_connection as lib_test_connection, transcribe_audio as lib_transcribe_audio,
-    MeetingData, TestConnectionResponse,
+    list_meetings as lib_list_meetings, pause_recording as lib_pause_recording,
+    save_api_key as lib_save_api_key, save_pipeline_results as lib_save_pipeline_results,
+    start_recording as lib_start_recording, stop_recording as lib_stop_recording,
+    summarize_text as lib_summarize_text, test_connection as lib_test_connection,
+    transcribe_audio as lib_transcribe_audio, MeetingData, TestConnectionResponse,
 };
 
 #[tauri::command]
@@ -99,6 +99,11 @@ async fn get_meeting_data(meeting_id: String) -> Result<MeetingData, String> {
     lib_get_meeting_data(meeting_id).await
 }
 
+#[tauri::command]
+async fn list_meetings() -> Result<Vec<Meeting>, String> {
+    lib_list_meetings().await
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -116,6 +121,7 @@ fn main() {
             summarize_text,
             save_pipeline_results,
             get_meeting_data,
+            list_meetings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
