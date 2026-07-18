@@ -27,6 +27,24 @@ const WHISPER_SAMPLE_RATE: i32 = 16_000;
 /// del límite de tamaño documentado (25 MB por request).
 const MAX_CHUNK_DURATION_SECS: f32 = 100.0;
 
+/// Umbral de RMS (escala i16, máximo 32767) bajo el cual un fragmento se
+/// considera silencio digital puro y se salta sin llamar a la API.
+///
+/// Deliberadamente muy bajo (solo atrapa audio literalmente vacío/plano).
+/// Confirmado en producción (2026-07-18): un WAV de silencio digital puro
+/// (RMS 0) hace que el backend de Whisper de este gateway devuelva un 500
+/// "litellm.InternalServerError ... Model Group=whisper" de forma
+/// reproducible. PERO se descartó usar un umbral más alto para detectar
+/// "casi silencio" en general: al medir un fragmento real que también
+/// disparaba el mismo 500 (la cola de una grabación, sin voz) contra otro
+/// fragmento de la MISMA grabación que sí transcribe bien, ambos resultaron
+/// tener estadísticas de energía por ventana casi idénticas (grabación de
+/// mic distante/bajo volumen en general) — no hay forma fiable de
+/// distinguir "silencio real" de "voz grabada bajito" con un umbral de
+/// amplitud aquí. La defensa real contra ese caso es el manejo de fallo por
+/// fragmento en `transcribe()` (ver más abajo), no este chequeo.
+const SILENCE_RMS_THRESHOLD: f64 = 5.0;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TranscriptSegment {
     pub start: f32,
@@ -76,6 +94,17 @@ impl CloudTranscriber {
             .iter()
             .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
             .collect()
+    }
+
+    /// True si el fragmento es esencialmente silencio (ver
+    /// SILENCE_RMS_THRESHOLD) y por tanto no debe enviarse a Whisper.
+    fn is_effectively_silent(samples: &[i16]) -> bool {
+        if samples.is_empty() {
+            return true;
+        }
+        let sum_sq: f64 = samples.iter().map(|&s| (s as f64) * (s as f64)).sum();
+        let rms = (sum_sq / samples.len() as f64).sqrt();
+        rms < SILENCE_RMS_THRESHOLD
     }
 
     /// Lee el WAV y lo normaliza a mono 16 kHz antes de trocearlo, sin
@@ -208,15 +237,94 @@ impl CloudTranscriber {
 impl crate::domain::Transcriber for CloudTranscriber {
     async fn transcribe(&self, audio_path: &str) -> Result<String, ResomerError> {
         let (spec, samples, chunks) = Self::chunk_audio_file(audio_path, MAX_CHUNK_DURATION_SECS)?;
+        let total_chunks = chunks.len();
 
         let mut all_transcripts = vec![];
+        let mut failed_chunks = 0usize;
+        let mut last_error: Option<ResomerError> = None;
 
         for (start, end) in chunks {
-            let wav_bytes = Self::encode_chunk_wav(spec, &samples[start..end])?;
-            let transcript = self.transcribe_chunk(wav_bytes).await?;
-            all_transcripts.push(transcript);
+            let chunk_samples = &samples[start..end];
+
+            // Silencio digital puro: no aporta texto y confirmadamente hace
+            // que este backend devuelva un 500 (ver SILENCE_RMS_THRESHOLD).
+            if Self::is_effectively_silent(chunk_samples) {
+                continue;
+            }
+
+            let wav_bytes = Self::encode_chunk_wav(spec, chunk_samples)?;
+
+            // Un fragmento individual puede fallar por razones ajenas a
+            // nuestro control (p. ej. este backend a veces devuelve 500 en
+            // tramos sin voz detectable, incluso cuando no son silencio
+            // digital puro — ver nota en SILENCE_RMS_THRESHOLD). En vez de
+            // abortar toda la transcripción de la reunión por un solo
+            // fragmento problemático, lo saltamos y seguimos con el resto.
+            match self.transcribe_chunk(wav_bytes).await {
+                Ok(transcript) => all_transcripts.push(transcript),
+                Err(e) => {
+                    failed_chunks += 1;
+                    last_error = Some(e);
+                }
+            }
         }
 
-        Ok(all_transcripts.join(" "))
+        if all_transcripts.is_empty() && failed_chunks > 0 {
+            // Ningún fragmento se transcribió: sí es un fallo real que hay
+            // que reportar, con el último error de fondo para diagnóstico.
+            return Err(ResomerError::Transcription(format!(
+                "Ningún fragmento de audio pudo transcribirse ({}/{} fallaron). Último error: {}",
+                failed_chunks,
+                total_chunks,
+                last_error
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "desconocido".to_string())
+            )));
+        }
+
+        let mut result = all_transcripts.join(" ");
+        if failed_chunks > 0 {
+            result.push_str(&format!(
+                "\n\n[Nota: {} de {} fragmentos de audio no pudieron transcribirse y se omitieron.]",
+                failed_chunks, total_chunks
+            ));
+        }
+
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod manual_verification {
+    use super::*;
+    use crate::domain::Transcriber;
+
+    // Test manual, ignorado por defecto: llama al gateway real con una
+    // grabación real que antes hacía fallar toda la transcripción por un
+    // fragmento de cola silenciosa. Requiere red y una API key válida en el
+    // Keychain. Ejecutar con:
+    //   cargo test --lib manual_verification -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn real_recording_with_silent_tail_does_not_abort() {
+        let api_key = crate::infra::keychain::KeychainManager::get_api_key()
+            .expect("keychain read failed")
+            .expect("no API key saved");
+
+        let transcriber = CloudTranscriber::new(
+            "https://api.nan.builders/v1/audio/transcriptions".to_string(),
+            api_key,
+            "whisper".to_string(),
+        );
+
+        let path = std::env::var("TEST_AUDIO_PATH")
+            .expect("set TEST_AUDIO_PATH to a real recording's .wav path");
+
+        let result = transcriber.transcribe(&path).await;
+        match &result {
+            Ok(text) => println!("OK ({} chars): {}", text.len(), text),
+            Err(e) => println!("ERROR: {}", e),
+        }
+        assert!(result.is_ok(), "la transcripción no debería abortar por completo");
     }
 }

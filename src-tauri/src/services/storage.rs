@@ -338,6 +338,7 @@ impl crate::domain::MeetingRepository for MeetingRepositoryImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::MeetingRepository;
     use std::fs;
 
     #[tokio::test]
