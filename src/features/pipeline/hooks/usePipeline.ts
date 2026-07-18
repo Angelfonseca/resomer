@@ -64,7 +64,7 @@ export const usePipeline = () => {
         // Save results to database if meetingId is provided
         if (meetingId) {
           await invoke("save_pipeline_results", {
-            meeting_id: meetingId,
+            meetingId,
             segments,
             transcript,
             summary,
@@ -82,6 +82,9 @@ export const usePipeline = () => {
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err)
         setState((prev) => ({ ...prev, step: "error", error }))
+        if (meetingId) {
+          await invoke("mark_meeting_error", { meetingId, error }).catch(() => {})
+        }
       }
     },
     []

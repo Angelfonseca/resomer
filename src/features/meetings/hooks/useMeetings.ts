@@ -14,22 +14,22 @@ export function useMeetings() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
 
+  const refreshMeetings = useCallback(async () => {
+    try {
+      const result = await invoke<Meeting[]>("list_meetings")
+      setMeetings(result)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
   // Load meetings from database on mount
   useEffect(() => {
-    const loadMeetings = async () => {
-      try {
-        const result = await invoke<Meeting[]>("list_meetings")
-        setMeetings(result)
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        setError(message)
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    loadMeetings()
-  }, [])
+    refreshMeetings()
+  }, [refreshMeetings])
 
   const createMeeting = useCallback(
     async (title: string) => {
@@ -50,11 +50,28 @@ export function useMeetings() {
     []
   )
 
+  const deleteMeeting = useCallback(async (id: string) => {
+    const previous = meetings
+    // Actualización optimista: la quitamos de la lista de inmediato.
+    setMeetings((prev) => prev.filter((m) => m.id !== id))
+    try {
+      await invoke("delete_meeting", { meetingId: id })
+    } catch (err) {
+      // Si falla, restauramos la lista y propagamos el error.
+      setMeetings(previous)
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+      throw err
+    }
+  }, [meetings])
+
   return {
     meetings,
     loading,
     error,
     createMeeting,
+    deleteMeeting,
+    refreshMeetings,
     setMeetings,
   }
 }

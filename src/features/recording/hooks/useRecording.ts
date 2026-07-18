@@ -89,9 +89,8 @@ export const useRecording = () => {
     setIsLoading(true);
     setError(null);
     try {
-      await invoke('stop_recording');
-
       if (recording) {
+        await invoke('stop_recording', { meetingId: recording.meetingId });
         setRecording({
           ...recording,
           state: 'stopped',

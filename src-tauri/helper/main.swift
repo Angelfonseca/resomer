@@ -51,6 +51,32 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     // Límite del FIFO (~2 s) para evitar crecimiento sin límite si hay deriva.
     private lazy var micRingCap = Int(sampleRate) * Int(channels) * 2
 
+    // Emisión de nivel de audio (para visualización en vivo en la UI).
+    // Se imprime "LVL <0..1>\n" a stdout, limitado a ~15 veces por segundo.
+    private var lastLevelEmit: Date = .distantPast
+    private let levelEmitInterval: TimeInterval = 1.0 / 15.0
+    private let stdoutQueue = DispatchQueue(label: "com.resomer.audio.stdout")
+
+    private func emitLevel(_ pcmBuffer: AVAudioPCMBuffer, frames: Int) {
+        let now = Date()
+        guard now.timeIntervalSince(lastLevelEmit) >= levelEmitInterval else { return }
+        lastLevelEmit = now
+
+        guard let data = pcmBuffer.floatChannelData else { return }
+        var peak: Float = 0
+        let channelCount = Int(pcmBuffer.format.channelCount)
+        for c in 0..<channelCount {
+            let ch = data[c]
+            for i in 0..<frames {
+                peak = max(peak, abs(ch[i]))
+            }
+        }
+        let level = min(1.0, peak)
+        stdoutQueue.async {
+            FileHandle.standardOutput.write(Data("LVL \(level)\n".utf8))
+        }
+    }
+
     init(outputURL: URL, captureMic: Bool) {
         self.outputURL = outputURL
         self.captureMic = captureMic
@@ -249,6 +275,8 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
                 ch1[i] = max(-1.0, min(1.0, ch1[i] + mic[i * 2 + 1]))
             }
         }
+
+        emitLevel(pcmBuffer, frames: Int(frames))
 
         do {
             try audioFile.write(from: pcmBuffer)

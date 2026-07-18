@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "motion/react"
 import { useRecording, useAudioDevices, type RecordingSource } from "../hooks/useRecording"
 import { useAudioMeter } from "../hooks/useAudioMeter"
 import { useSyntheticMeter } from "../hooks/useSyntheticMeter"
+import { useSystemAudioMeter } from "../hooks/useSystemAudioMeter"
 import { Panel, PanelHeader, PanelBody } from "../../../components/ui/Panel"
 import { IconButton } from "../../../components/ui/IconButton"
 import { SelectField } from "../../../components/ui/Field"
@@ -30,9 +31,16 @@ export function RecordingPanel({ meetingId, onRecordingComplete }: RecordingPane
 
   const isRecording = recording?.state === "recording"
 
-  const liveMeter = useAudioMeter(isRecording)
-  const syntheticLevels = useSyntheticMeter(isRecording && liveMeter.errored)
-  const levels = liveMeter.errored ? syntheticLevels : liveMeter.levels
+  // Para "solo audio del sistema" y "ambos", el medidor usa el nivel REAL
+  // capturado por el helper (llega vía evento Tauri), no un proxy del mic.
+  // Para "solo micrófono" seguimos con el medidor local (getUserMedia).
+  const isSystemSource = selectedSource !== "microphone"
+
+  const liveMeter = useAudioMeter(isRecording && !isSystemSource)
+  const syntheticLevels = useSyntheticMeter(isRecording && !isSystemSource && liveMeter.errored)
+  const systemLevels = useSystemAudioMeter(isRecording && isSystemSource)
+
+  const levels = isSystemSource ? systemLevels : liveMeter.errored ? syntheticLevels : liveMeter.levels
 
   useEffect(() => {
     if (!isRecording) return
@@ -80,9 +88,14 @@ export function RecordingPanel({ meetingId, onRecordingComplete }: RecordingPane
 
         {/* Console screen: waveform + timecode */}
         <div className="rounded-control border border-hairline-strong bg-canvas-raised px-6 py-8">
-          <div className="mb-6 h-20">
+          <div className="mb-2 h-20">
             <Waveform levels={levels} active={isRecording} />
           </div>
+          {isRecording && (
+            <p className="mb-4 text-center font-mono text-[10px] uppercase tracking-[0.1em] text-ink-mute">
+              {isSystemSource ? "Nivel real capturado del sistema" : "Vista previa del micrófono"}
+            </p>
+          )}
           <div className="flex items-center justify-center">
             <Timecode seconds={durationSeconds} size="xl" />
           </div>

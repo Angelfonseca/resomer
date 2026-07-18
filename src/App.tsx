@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Mic } from "lucide-react"
 import { AppShell, type View } from "./components/layout/AppShell"
 import { Topbar } from "./components/layout/Topbar"
@@ -20,9 +20,15 @@ const VIEW_META: Record<View, { title: string; subtitle?: string }> = {
 function App() {
   const [currentView, setCurrentView] = useState<View>("studio")
   const [lastRecordingPath, setLastRecordingPath] = useState<string | null>(null)
-  const { meetings, createMeeting } = useMeetings()
+  const { meetings, createMeeting, deleteMeeting, refreshMeetings } = useMeetings()
   const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null)
   const { hasKey, refresh: refreshApiKeyStatus } = useApiKeyStatus()
+
+  // Refrescar la lista al volver a Studio, para reflejar cambios de estado
+  // ocurridos durante la grabación o el pipeline (procesando → completada).
+  useEffect(() => {
+    if (currentView === "studio") refreshMeetings()
+  }, [currentView, refreshMeetings])
 
   const beginNewRecording = useCallback(async () => {
     const label = `Reunión ${meetings.length + 1}`
@@ -60,7 +66,11 @@ function App() {
 
       <main className="flex-1 overflow-y-auto px-8 py-8">
         {currentView === "studio" && (
-          <StudioView meetings={meetings} onStartRecording={beginNewRecording} />
+          <StudioView
+            meetings={meetings}
+            onStartRecording={beginNewRecording}
+            onDeleteMeeting={deleteMeeting}
+          />
         )}
 
         {currentView === "recording" && (

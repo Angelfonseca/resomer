@@ -1,16 +1,21 @@
 use crate::domain::AudioRecorder;
 use crate::ResomerError;
 use async_trait::async_trait;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
+use tauri::Emitter;
 
 /// Ruta al binario del helper de Swift, inyectada por build.rs en tiempo de
 /// compilación. El helper usa ScreenCaptureKit para capturar el audio del
 /// sistema (audio interno) de forma nativa, sin depender de apps externas.
 const HELPER_PATH: Option<&str> = option_env!("RESOMER_AUDIO_HELPER");
+
+/// Evento Tauri emitido con el nivel de audio en vivo (0.0–1.0) mientras se
+/// captura audio del sistema, para que la UI pueda visualizarlo.
+const LEVEL_EVENT: &str = "system-audio-level";
 
 /// Graba el audio del sistema (audio interno) lanzando el helper de Swift
 /// basado en ScreenCaptureKit y controlándolo como proceso hijo. Se detiene
@@ -21,19 +26,21 @@ const HELPER_PATH: Option<&str> = option_env!("RESOMER_AUDIO_HELPER");
 pub struct SystemAudioRecorder {
     child: Mutex<Option<Child>>,
     capture_mic: bool,
+    app: tauri::AppHandle,
 }
 
 impl SystemAudioRecorder {
     /// Crea un grabador de solo audio del sistema.
-    pub fn new() -> Result<Self, ResomerError> {
-        Self::with_options(false)
+    pub fn new(app: tauri::AppHandle) -> Result<Self, ResomerError> {
+        Self::with_options(app, false)
     }
 
     /// Crea un grabador con opción de mezclar el micrófono.
-    pub fn with_options(capture_mic: bool) -> Result<Self, ResomerError> {
+    pub fn with_options(app: tauri::AppHandle, capture_mic: bool) -> Result<Self, ResomerError> {
         Ok(Self {
             child: Mutex::new(None),
             capture_mic,
+            app,
         })
     }
 
@@ -161,6 +168,25 @@ impl AudioRecorder for SystemAudioRecorder {
                     )))
                 }
             }
+        }
+
+        // El helper sigue vivo: leer su stdout en un hilo aparte y reenviar
+        // cada línea "LVL <0..1>" como evento Tauri para el medidor en vivo.
+        // Es imprescindible consumir el stdout del hijo: si nadie lee y el
+        // pipe se llena, el helper se bloquearía al escribir.
+        if let Some(stdout) = child.stdout.take() {
+            let app = self.app.clone();
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines() {
+                    let Ok(line) = line else { break };
+                    if let Some(rest) = line.strip_prefix("LVL ") {
+                        if let Ok(level) = rest.trim().parse::<f32>() {
+                            let _ = app.emit(LEVEL_EVENT, level);
+                        }
+                    }
+                }
+            });
         }
 
         *self.child.lock().unwrap() = Some(child);

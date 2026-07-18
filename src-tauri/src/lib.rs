@@ -148,6 +148,7 @@ fn resolve_recording_path(output_path: &str) -> Result<String, String> {
 }
 
 pub async fn start_recording(
+    app: tauri::AppHandle,
     meeting_id: String,
     output_path: String,
     source: String,
@@ -189,14 +190,14 @@ pub async fn start_recording(
         RecordingSource::SystemAudio => {
             // Solo audio del sistema (ScreenCaptureKit).
             Arc::new(
-                SystemAudioRecorder::with_options(false)
+                SystemAudioRecorder::with_options(app.clone(), false)
                     .map_err(|e| format!("System audio recorder init failed: {}", e))?,
             )
         }
         RecordingSource::Both => {
             // Audio del sistema + micrófono mezclados en una sola pista.
             Arc::new(
-                SystemAudioRecorder::with_options(true)
+                SystemAudioRecorder::with_options(app.clone(), true)
                     .map_err(|e| format!("System audio recorder init failed: {}", e))?,
             )
         }
@@ -215,7 +216,7 @@ pub async fn start_recording(
     Ok(resolved_path)
 }
 
-pub async fn stop_recording() -> Result<(), String> {
+pub async fn stop_recording(meeting_id: String) -> Result<(), String> {
     let recorder_state = RECORDER.get_or_init(|| Arc::new(Mutex::new(None)));
     let mut state = recorder_state.lock().await;
 
@@ -224,6 +225,16 @@ pub async fn stop_recording() -> Result<(), String> {
     }
 
     *state = None;
+
+    // La grabación terminó; el audio está en disco pero el pipeline
+    // (diarización/transcripción/resumen) aún no corrió.
+    if let Ok(repo) = get_database() {
+        if let Ok(Some(mut meeting)) = repo.get(&meeting_id).await {
+            meeting.state = MeetingState::Processing;
+            let _ = repo.update(meeting).await;
+        }
+    }
+
     Ok(())
 }
 
@@ -298,7 +309,30 @@ pub async fn save_pipeline_results(
     repo.save_summary(&meeting_id, &summary)
         .map_err(|e| e.to_string())?;
 
+    // El pipeline completó con éxito: marcar la reunión como completada.
+    if let Ok(Some(mut meeting)) = repo.get(&meeting_id).await {
+        meeting.state = MeetingState::Completed;
+        let _ = repo.update(meeting).await;
+    }
+
     Ok(())
+}
+
+/// Marca una reunión como fallida cuando el pipeline (diarización,
+/// transcripción o resumen) aborta con error, para que deje de mostrarse
+/// como "grabando"/"procesando" indefinidamente en la interfaz.
+pub async fn mark_meeting_error(meeting_id: String, error: String) -> Result<(), String> {
+    let repo = get_database()?;
+    if let Ok(Some(mut meeting)) = repo.get(&meeting_id).await {
+        meeting.state = MeetingState::Error(error);
+        let _ = repo.update(meeting).await;
+    }
+    Ok(())
+}
+
+pub async fn delete_meeting(meeting_id: String) -> Result<(), String> {
+    let repo = get_database()?;
+    repo.delete(&meeting_id).await.map_err(|e| e.to_string())
 }
 
 pub async fn get_meeting_data(

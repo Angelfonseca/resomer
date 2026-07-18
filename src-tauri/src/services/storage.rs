@@ -219,7 +219,7 @@ impl crate::domain::MeetingRepository for MeetingRepositoryImpl {
             MeetingState::Recording => "recording",
             MeetingState::Processing => "processing",
             MeetingState::Completed => "completed",
-            MeetingState::Error(msg) => return Err(ResomerError::Storage(msg.clone())),
+            MeetingState::Error(_) => "error",
         };
 
         let conn = self.db.get_connection()?;
@@ -306,7 +306,7 @@ impl crate::domain::MeetingRepository for MeetingRepositoryImpl {
             MeetingState::Recording => "recording",
             MeetingState::Processing => "processing",
             MeetingState::Completed => "completed",
-            MeetingState::Error(msg) => return Err(ResomerError::Storage(msg.clone())),
+            MeetingState::Error(_) => "error",
         };
 
         let conn = self.db.get_connection()?;
