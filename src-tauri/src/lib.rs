@@ -13,7 +13,8 @@ use infra::config::ConfigManager;
 use infra::keychain::KeychainManager;
 use serde::{Deserialize, Serialize};
 use services::{
-    list_input_devices, CloudTranscriber, CpalAudioRecorder, LlmSummarizer, SherpaDiarizationEngine, MeetingRepositoryImpl,
+    list_input_devices, CloudTranscriber, CpalAudioRecorder, LlmSummarizer, SherpaDiarizationEngine,
+    MeetingRepositoryImpl, SystemAudioRecorder,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -116,7 +117,7 @@ pub async fn start_recording(
     output_path: String,
     source: String,
 ) -> Result<(), String> {
-    let _source = match source.as_str() {
+    let recording_source = match source.as_str() {
         "microphone" => RecordingSource::Microphone,
         "system_audio" => RecordingSource::SystemAudio,
         "both" => RecordingSource::Both,
@@ -143,8 +144,19 @@ pub async fn start_recording(
     meeting.state = MeetingState::Recording;
     repo.update(meeting).await.map_err(|e| e.to_string())?;
 
-    let recorder: Arc<dyn AudioRecorder> =
-        Arc::new(CpalAudioRecorder::new().map_err(|e| format!("Recorder init failed: {}", e))?);
+    // Select appropriate recorder based on source
+    let recorder: Arc<dyn AudioRecorder> = match recording_source {
+        RecordingSource::Microphone => {
+            Arc::new(CpalAudioRecorder::new().map_err(|e| format!("Recorder init failed: {}", e))?)
+        }
+        RecordingSource::SystemAudio => {
+            Arc::new(SystemAudioRecorder::new().map_err(|e| format!("System audio recorder init failed: {}", e))?)
+        }
+        RecordingSource::Both => {
+            // For "both", use system audio recorder (it includes system audio which is more comprehensive)
+            Arc::new(SystemAudioRecorder::new().map_err(|e| format!("System audio recorder init failed: {}", e))?)
+        }
+    };
 
     recorder
         .start_recording(&output_path)
