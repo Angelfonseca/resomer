@@ -1,0 +1,127 @@
+@import "tailwindcss";
+
+/* Fonts are imported as JS side-effects in main.tsx (so Vite resolves the
+   woff2 asset URLs correctly — @import-ing them here does not). */
+
+/* ---------------------------------------------------------------------- */
+/* Design tokens — "Studio Console"                                       */
+/* One signal color (amber). Everything else is warm neutrals + semantic. */
+/* ---------------------------------------------------------------------- */
+@theme {
+  --font-display: "Bricolage Grotesque Variable", "Bricolage Grotesque", ui-sans-serif, sans-serif;
+  --font-body: "Hanken Grotesk Variable", "Hanken Grotesk", ui-sans-serif, sans-serif;
+  --font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, monospace;
+
+  /* Surfaces */
+  --color-canvas: #0b0b0c;
+  --color-canvas-raised: #0f0f11;
+  --color-panel: #141416;
+  --color-panel-hi: #1b1b1e;
+  --color-panel-hover: #202024;
+  --color-hairline: #ffffff12;
+  --color-hairline-strong: #ffffff1f;
+
+  /* Ink */
+  --color-ink: #edeae3;
+  --color-ink-dim: #9a968c;
+  --color-ink-mute: #847f76; /* ~4.95:1 on canvas — meets WCAG AA for small text */
+
+  /* Signal — the ONE accent */
+  --color-signal: #ffb020;
+  --color-signal-hi: #ffc247;
+  --color-signal-dim: #ffb02026;
+  --color-signal-ink: #1a1206;
+
+  /* Semantic (used sparingly, never decoratively) */
+  --color-rec: #ff4438;
+  --color-rec-dim: #ff443826;
+  --color-done: #5fb87a;
+  --color-done-dim: #5fb87a26;
+  --color-warn: #f0a94e;
+
+  /* Speaker channel colors — muted, live inside the palette */
+  --color-channel-1: #ffb020;
+  --color-channel-2: #4fa98c;
+  --color-channel-3: #8f8aa8;
+  --color-channel-4: #a69b87;
+
+  --radius-panel: 0.875rem;
+  --radius-control: 0.5rem;
+
+  --shadow-panel: 0 1px 0 0 rgba(255, 255, 255, 0.04) inset, 0 20px 40px -20px rgba(0, 0, 0, 0.6);
+  --shadow-signal: 0 0 0 1px var(--color-signal-dim), 0 8px 24px -8px #ffb02040;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Base                                                                    */
+/* ---------------------------------------------------------------------- */
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow: hidden;
+  }
+
+  #root {
+    display: flex;
+    min-height: 100vh;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.15;
+  }
+
+  ::selection {
+    background: var(--color-signal-dim);
+    color: var(--color-signal-hi);
+  }
+
+  /* Scrollbars — thin, dark, consistent with the console feel */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-hairline-strong) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--color-hairline-strong);
+    border-radius: 999px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--color-ink-mute);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-signal);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

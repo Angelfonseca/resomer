@@ -1,0 +1,21 @@
+# Tauri / Vite
+dist/
+node_modules/
+target/
+.env.local
+
+# Models (descargados en runtime)
+src-tauri/models/
+
+# OS
+.DS_Store
+*.pdb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log

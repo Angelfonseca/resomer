@@ -1,0 +1,28 @@
+{
+  "productName": "Resomer",
+  "version": "0.1.0",
+  "identifier": "com.resomer.app",
+  "build": {
+    "beforeBuildCommand": "npm run build:frontend",
+    "beforeDevCommand": "npm run vite",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "fullscreen": false,
+        "height": 900,
+        "resizable": true,
+        "title": "Resomer",
+        "width": 1200
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}
