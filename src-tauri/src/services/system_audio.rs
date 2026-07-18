@@ -15,14 +15,25 @@ const HELPER_PATH: Option<&str> = option_env!("RESOMER_AUDIO_HELPER");
 /// Graba el audio del sistema (audio interno) lanzando el helper de Swift
 /// basado en ScreenCaptureKit y controlándolo como proceso hijo. Se detiene
 /// enviando SIGTERM, con lo que el helper finaliza el WAV de forma segura.
+///
+/// Si `capture_mic` es `true`, el helper también captura el micrófono y lo
+/// mezcla en la misma pista (modo "ambos").
 pub struct SystemAudioRecorder {
     child: Mutex<Option<Child>>,
+    capture_mic: bool,
 }
 
 impl SystemAudioRecorder {
+    /// Crea un grabador de solo audio del sistema.
     pub fn new() -> Result<Self, ResomerError> {
+        Self::with_options(false)
+    }
+
+    /// Crea un grabador con opción de mezclar el micrófono.
+    pub fn with_options(capture_mic: bool) -> Result<Self, ResomerError> {
         Ok(Self {
             child: Mutex::new(None),
+            capture_mic,
         })
     }
 
@@ -46,21 +57,24 @@ impl SystemAudioRecorder {
     }
 
     fn helper_path() -> Result<PathBuf, ResomerError> {
-        // Ruta principal: la que baked build.rs (OUT_DIR).
-        if let Some(p) = HELPER_PATH {
-            let path = PathBuf::from(p);
-            if path.exists() {
-                return Ok(path);
-            }
-        }
-
-        // Fallback: junto al ejecutable actual (útil en release/empaquetado).
+        // Prioridad 1: el helper empaquetado junto al ejecutable (app instalada).
+        // Es importante para TCC: macOS asocia el permiso de Grabación de
+        // pantalla al binario dentro del bundle, no a uno externo.
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {
                 let candidate = dir.join("resomer-audio-helper");
                 if candidate.exists() {
                     return Ok(candidate);
                 }
+            }
+        }
+
+        // Prioridad 2: la ruta baked por build.rs (OUT_DIR) — útil en `tauri dev`,
+        // donde no hay bundle y el ejecutable vive en target/debug.
+        if let Some(p) = HELPER_PATH {
+            let path = PathBuf::from(p);
+            if path.exists() {
+                return Ok(path);
             }
         }
 
@@ -113,8 +127,13 @@ impl AudioRecorder for SystemAudioRecorder {
 
         let helper = Self::helper_path()?;
 
-        let mut child = Command::new(&helper)
-            .arg(output_path)
+        let mut command = Command::new(&helper);
+        command.arg(output_path);
+        if self.capture_mic {
+            command.arg("--mic");
+        }
+
+        let mut child = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()

@@ -157,11 +157,18 @@ pub async fn start_recording(
             Arc::new(CpalAudioRecorder::new().map_err(|e| format!("Recorder init failed: {}", e))?)
         }
         RecordingSource::SystemAudio => {
-            Arc::new(SystemAudioRecorder::new().map_err(|e| format!("System audio recorder init failed: {}", e))?)
+            // Solo audio del sistema (ScreenCaptureKit).
+            Arc::new(
+                SystemAudioRecorder::with_options(false)
+                    .map_err(|e| format!("System audio recorder init failed: {}", e))?,
+            )
         }
         RecordingSource::Both => {
-            // For "both", use system audio recorder (it includes system audio which is more comprehensive)
-            Arc::new(SystemAudioRecorder::new().map_err(|e| format!("System audio recorder init failed: {}", e))?)
+            // Audio del sistema + micrófono mezclados en una sola pista.
+            Arc::new(
+                SystemAudioRecorder::with_options(true)
+                    .map_err(|e| format!("System audio recorder init failed: {}", e))?,
+            )
         }
     };
 

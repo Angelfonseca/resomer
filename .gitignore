@@ -7,6 +7,9 @@ target/
 # Models (descargados en runtime)
 src-tauri/models/
 
+# Sidecar del helper de audio (generado por build.rs)
+src-tauri/binaries/
+
 # OS
 .DS_Store
 *.pdb

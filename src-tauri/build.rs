@@ -25,7 +25,7 @@ fn build_audio_helper() {
     // Recompilar si cambia el fuente Swift.
     println!("cargo:rerun-if-changed={}", swift_src.display());
 
-    // Exponer la ruta del binario al crate en tiempo de compilación.
+    // Exponer la ruta del binario al crate en tiempo de compilación (dev).
     println!(
         "cargo:rustc-env=RESOMER_AUDIO_HELPER={}",
         helper_bin.display()
@@ -48,5 +48,22 @@ fn build_audio_helper() {
         Ok(s) if s.success() => {}
         Ok(s) => panic!("swiftc falló al compilar el helper de audio (código {s})"),
         Err(e) => panic!("no se pudo ejecutar swiftc: {e}"),
+    }
+
+    // Copiar el helper a binaries/<name>-<target-triple> para que Tauri lo
+    // empaquete como sidecar (externalBin) dentro de la app. Así el binario
+    // queda junto al ejecutable principal y el fallback current_exe lo encuentra.
+    let target = env::var("TARGET").unwrap_or_default();
+    if !target.is_empty() {
+        let binaries_dir = Path::new(&manifest_dir).join("binaries");
+        let _ = std::fs::create_dir_all(&binaries_dir);
+        let sidecar = binaries_dir.join(format!("resomer-audio-helper-{}", target));
+        if let Err(e) = std::fs::copy(&helper_bin, &sidecar) {
+            println!(
+                "cargo:warning=No se pudo copiar el helper a {}: {}",
+                sidecar.display(),
+                e
+            );
+        }
     }
 }
