@@ -10,6 +10,8 @@ src-tauri/models/
 # OS
 .DS_Store
 *.pdb
+recordings/
+*.wav
 
 # IDE
 .vscode/
