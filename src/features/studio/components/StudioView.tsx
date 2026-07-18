@@ -61,14 +61,26 @@ const meetingStateTone: Record<Meeting["state"], "signal" | "rec" | "done" | "id
 function MeetingRow({
   meeting,
   onDelete,
+  onOpen,
 }: {
   meeting: Meeting
   onDelete?: (id: string) => void
+  onOpen?: (meeting: Meeting) => void
 }) {
   const [confirming, setConfirming] = useState(false)
 
+  // Solo se puede abrir una reunión que ya tenga audio grabado y no esté
+  // grabándose en este momento (el WAV aún se está escribiendo).
+  const canOpen = Boolean(onOpen && meeting.audio_path && meeting.state !== "recording")
+
   return (
-    <Panel className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-panel-hi">
+    <Panel
+      onClick={canOpen ? () => onOpen?.(meeting) : undefined}
+      className={
+        "flex items-center gap-3 px-4 py-3 transition-colors hover:bg-panel-hi" +
+        (canOpen ? " cursor-pointer" : "")
+      }
+    >
       <StatusDot tone={meetingStateTone[meeting.state]} pulse={meeting.state === "recording"} />
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-ink">{meeting.title}</p>
@@ -85,6 +97,7 @@ function MeetingRow({
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 6 }}
             className="flex items-center gap-1.5"
+            onClick={(e) => e.stopPropagation()}
           >
             <span className="font-mono text-[11px] text-ink-mute">¿Borrar?</span>
             <button
@@ -111,6 +124,7 @@ function MeetingRow({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="flex items-center gap-2"
+            onClick={(e) => e.stopPropagation()}
           >
             <span
               className={
@@ -141,10 +155,12 @@ export function StudioView({
   meetings,
   onStartRecording,
   onDeleteMeeting,
+  onOpenMeeting,
 }: {
   meetings: Meeting[]
   onStartRecording: () => void
   onDeleteMeeting?: (id: string) => void
+  onOpenMeeting?: (meeting: Meeting) => void
 }) {
   const [query, setQuery] = useState("")
   const [sortAsc, setSortAsc] = useState(false)
@@ -250,7 +266,12 @@ export function StudioView({
           </div>
           <div className="space-y-2">
             {processingMeetings.map((meeting) => (
-              <MeetingRow key={meeting.id} meeting={meeting} onDelete={onDeleteMeeting} />
+              <MeetingRow
+                key={meeting.id}
+                meeting={meeting}
+                onDelete={onDeleteMeeting}
+                onOpen={onOpenMeeting}
+              />
             ))}
           </div>
         </div>
@@ -266,7 +287,12 @@ export function StudioView({
           </div>
           <div className="space-y-2">
             {completedMeetings.map((meeting) => (
-              <MeetingRow key={meeting.id} meeting={meeting} onDelete={onDeleteMeeting} />
+              <MeetingRow
+                key={meeting.id}
+                meeting={meeting}
+                onDelete={onDeleteMeeting}
+                onOpen={onOpenMeeting}
+              />
             ))}
           </div>
         </div>

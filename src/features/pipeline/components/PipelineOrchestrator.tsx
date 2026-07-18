@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react"
 import { AlertCircle, Play, RotateCcw, Sparkles, Workflow } from "lucide-react"
 import { motion } from "motion/react"
 import { usePipeline } from "../hooks/usePipeline"
@@ -22,7 +23,18 @@ const STEP_LABEL: Record<string, string> = {
 }
 
 export function PipelineOrchestrator({ audioPath, meetingId }: { audioPath?: string; meetingId?: string }) {
-  const { state, runPipeline, reset } = usePipeline()
+  const { state, runPipeline, reset, loadExisting, loadingExisting } = usePipeline()
+
+  // Al entrar con una reunión existente, carga lo que ya haya guardado
+  // (transcripción/resumen) en vez de asumir que hay que grabar/ejecutar de
+  // cero. Solo una vez por reunión (loadedFor evita relanzar en cada render).
+  const loadedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (!audioPath || !meetingId) return
+    if (loadedFor.current === meetingId) return
+    loadedFor.current = meetingId
+    loadExisting(meetingId, audioPath)
+  }, [audioPath, meetingId, loadExisting])
 
   const currentIndex =
     state.step === "idle"
@@ -42,6 +54,15 @@ export function PipelineOrchestrator({ audioPath, meetingId }: { audioPath?: str
         title="Sin audio para procesar"
         description="Graba una reunión primero — el pipeline se activará automáticamente cuando termine."
       />
+    )
+  }
+
+  if (loadingExisting) {
+    return (
+      <div className="flex items-center justify-center gap-2 py-16">
+        <StatusDot tone="signal" pulse />
+        <span className="font-mono text-xs text-ink-dim">Cargando reunión…</span>
+      </div>
     )
   }
 

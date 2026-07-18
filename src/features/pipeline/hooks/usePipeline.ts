@@ -27,14 +27,49 @@ export interface PipelineState {
   error?: string
 }
 
+interface MeetingData {
+  segments: Segment[]
+  transcript: string | null
+  summary: string | null
+}
+
 export const usePipeline = () => {
   const [state, setState] = useState<PipelineState>({
     step: "idle",
     progress: 0,
   })
+  const [loadingExisting, setLoadingExisting] = useState(false)
 
   const reset = useCallback(() => {
     setState({ step: "idle", progress: 0 })
+  }, [])
+
+  // Al abrir una reunión ya existente, carga lo que ya haya guardado en la
+  // base de datos (segments/transcript/summary) en vez de re-ejecutar el
+  // pipeline desde cero. Si no hay nada guardado (grabación sin procesar, o
+  // que quedó en error), deja el estado en "idle" para que el usuario pueda
+  // ejecutarlo/reintentarlo con el botón normal.
+  const loadExisting = useCallback(async (meetingId: string, audioPath: string) => {
+    setLoadingExisting(true)
+    try {
+      const data = await invoke<MeetingData>("get_meeting_data", { meetingId })
+      if (data.transcript && data.summary) {
+        setState({
+          step: "complete",
+          audioPath,
+          segments: data.segments,
+          transcript: data.transcript,
+          summary: data.summary,
+          progress: 100,
+        })
+      } else {
+        setState({ step: "idle", audioPath, progress: 0 })
+      }
+    } catch {
+      setState({ step: "idle", audioPath, progress: 0 })
+    } finally {
+      setLoadingExisting(false)
+    }
   }, [])
 
   const runPipeline = useCallback(
@@ -90,5 +125,5 @@ export const usePipeline = () => {
     []
   )
 
-  return { state, runPipeline, reset }
+  return { state, runPipeline, reset, loadExisting, loadingExisting }
 }

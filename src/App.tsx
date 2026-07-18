@@ -8,7 +8,7 @@ import { RecordingPanel } from "./features/recording"
 import { PipelineOrchestrator } from "./features/pipeline"
 import { ApiKeySettings } from "./features/settings/components/ApiKeySettings"
 import { useApiKeyStatus } from "./features/settings/hooks/useApiKeyStatus"
-import { useMeetings } from "./features/meetings/hooks/useMeetings"
+import { useMeetings, type Meeting } from "./features/meetings/hooks/useMeetings"
 
 const VIEW_META: Record<View, { title: string; subtitle?: string }> = {
   studio: { title: "Studio", subtitle: "Tu espacio de trabajo de reuniones" },
@@ -42,6 +42,15 @@ function App() {
     setCurrentView("recording")
   }, [meetings.length, createMeeting])
 
+  // Abrir una reunión existente: muestra sus resultados guardados, o
+  // permite ejecutar/reintentar el pipeline si aún no los tiene.
+  const openMeeting = useCallback((meeting: Meeting) => {
+    if (!meeting.audio_path) return
+    setActiveMeetingId(meeting.id)
+    setLastRecordingPath(meeting.audio_path)
+    setCurrentView("pipeline")
+  }, [])
+
   const meta = VIEW_META[currentView]
 
   return (
@@ -70,6 +79,7 @@ function App() {
             meetings={meetings}
             onStartRecording={beginNewRecording}
             onDeleteMeeting={deleteMeeting}
+            onOpenMeeting={openMeeting}
           />
         )}
 
