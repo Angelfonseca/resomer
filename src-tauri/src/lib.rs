@@ -132,17 +132,24 @@ pub async fn start_recording(
         }
     }
 
-    // Update meeting in BD with audio path
-    let repo = get_database()?;
-    let mut meeting = repo
-        .get(&meeting_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Meeting not found".to_string())?;
-
-    meeting.audio_path = Some(output_path.clone());
-    meeting.state = MeetingState::Recording;
-    repo.update(meeting).await.map_err(|e| e.to_string())?;
+    // Update meeting in BD with audio path (or create if doesn't exist)
+    if let Ok(repo) = get_database() {
+        match repo.get(&meeting_id).await {
+            Ok(Some(mut meeting)) => {
+                meeting.audio_path = Some(output_path.clone());
+                meeting.state = MeetingState::Recording;
+                let _ = repo.update(meeting).await;
+            }
+            _ => {
+                // Create meeting if it doesn't exist
+                let mut meeting = Meeting::new("Reunión".to_string());
+                meeting.id = meeting_id.clone();
+                meeting.audio_path = Some(output_path.clone());
+                meeting.state = MeetingState::Recording;
+                let _ = repo.create(meeting).await;
+            }
+        }
+    }
 
     // Select appropriate recorder based on source
     let recorder: Arc<dyn AudioRecorder> = match recording_source {
