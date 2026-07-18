@@ -59,7 +59,9 @@ export const useRecording = () => {
       setIsLoading(true);
       setError(null);
       try {
-        await invoke('start_recording', {
+        // El backend resuelve la ruta a una ubicación absoluta escribible
+        // (~/.resomer/recordings) y la devuelve; la usamos para el pipeline.
+        const resolvedPath = await invoke<string>('start_recording', {
           meetingId,
           outputPath,
           source,
@@ -69,7 +71,7 @@ export const useRecording = () => {
           meetingId,
           state: 'recording',
           source,
-          filePath: outputPath,
+          filePath: resolvedPath,
           durationMs: 0,
           startedAt: new Date().toISOString(),
         });

@@ -42,7 +42,7 @@ async fn start_recording(
     meeting_id: String,
     output_path: String,
     source: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     lib_start_recording(meeting_id, output_path, source).await
 }
 

@@ -112,11 +112,46 @@ pub fn get_database() -> Result<Arc<MeetingRepositoryImpl>, String> {
     Ok(repo)
 }
 
+/// Carpeta de grabaciones escribible (`~/.resomer/recordings`). Se crea si no
+/// existe. Nunca depende del directorio de trabajo, que en la app empaquetada
+/// es de solo lectura.
+fn recordings_dir() -> Result<PathBuf, String> {
+    let base = if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".resomer").join("recordings")
+    } else if let Ok(up) = std::env::var("USERPROFILE") {
+        PathBuf::from(up).join(".resomer").join("recordings")
+    } else {
+        PathBuf::from(".").join(".resomer").join("recordings")
+    };
+    std::fs::create_dir_all(&base)
+        .map_err(|e| format!("Failed to create recordings directory: {}", e))?;
+    Ok(base)
+}
+
+/// Convierte la ruta recibida del frontend en una ruta absoluta escribible.
+/// Si es relativa, usa solo el nombre de archivo bajo `recordings_dir()`.
+fn resolve_recording_path(output_path: &str) -> Result<String, String> {
+    let p = PathBuf::from(output_path);
+    let abs = if p.is_absolute() {
+        p
+    } else {
+        let name = p.file_name().map(PathBuf::from).unwrap_or(p);
+        recordings_dir()?.join(name)
+    };
+    if let Some(parent) = abs.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create recordings directory: {}", e))?;
+    }
+    abs.to_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Ruta de grabación inválida".to_string())
+}
+
 pub async fn start_recording(
     meeting_id: String,
     output_path: String,
     source: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let recording_source = match source.as_str() {
         "microphone" => RecordingSource::Microphone,
         "system_audio" => RecordingSource::SystemAudio,
@@ -124,19 +159,14 @@ pub async fn start_recording(
         _ => return Err("Invalid recording source".to_string()),
     };
 
-    // Create parent directories if needed
-    if let Some(parent) = PathBuf::from(&output_path).parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create recordings directory: {}", e))?;
-        }
-    }
+    // Resolver a una ruta absoluta escribible (crea la carpeta si hace falta).
+    let resolved_path = resolve_recording_path(&output_path)?;
 
     // Update meeting in BD with audio path (or create if doesn't exist)
     if let Ok(repo) = get_database() {
         match repo.get(&meeting_id).await {
             Ok(Some(mut meeting)) => {
-                meeting.audio_path = Some(output_path.clone());
+                meeting.audio_path = Some(resolved_path.clone());
                 meeting.state = MeetingState::Recording;
                 let _ = repo.update(meeting).await;
             }
@@ -144,7 +174,7 @@ pub async fn start_recording(
                 // Create meeting if it doesn't exist
                 let mut meeting = Meeting::new("Reunión".to_string());
                 meeting.id = meeting_id.clone();
-                meeting.audio_path = Some(output_path.clone());
+                meeting.audio_path = Some(resolved_path.clone());
                 meeting.state = MeetingState::Recording;
                 let _ = repo.create(meeting).await;
             }
@@ -173,7 +203,7 @@ pub async fn start_recording(
     };
 
     recorder
-        .start_recording(&output_path)
+        .start_recording(&resolved_path)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -182,7 +212,7 @@ pub async fn start_recording(
     let mut state = recorder_state.lock().await;
     *state = Some(recorder);
 
-    Ok(())
+    Ok(resolved_path)
 }
 
 pub async fn stop_recording() -> Result<(), String> {
