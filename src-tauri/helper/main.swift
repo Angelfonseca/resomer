@@ -16,12 +16,48 @@
 import Foundation
 import ScreenCaptureKit
 import AVFoundation
+import CoreAudio
 
 // MARK: - Utilidad de error
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
     exit(1)
+}
+
+/// Frecuencia de muestreo nominal actual del dispositivo de salida por
+/// defecto (altavoces/auriculares). Se usa para pedirle a ScreenCaptureKit
+/// exactamente esa misma frecuencia en vez de forzar un valor fijo (p. ej.
+/// 48000 Hz): si el dispositivo corre a otra frecuencia, forzar un cambio
+/// puede hacer que CoreAudio reconfigure el hardware de salida, lo cual en
+/// algunos equipos se percibe como una bajada de volumen en vivo mientras
+/// se graba. Devuelve nil si no se puede consultar (se usa un valor por
+/// defecto en ese caso).
+func currentOutputSampleRate() -> Double? {
+    var deviceID = AudioDeviceID(0)
+    var deviceIDSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+    var deviceAddr = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    let status = AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject), &deviceAddr, 0, nil, &deviceIDSize, &deviceID
+    )
+    guard status == noErr, deviceID != 0 else { return nil }
+
+    var sampleRate = Float64(0)
+    var sampleRateSize = UInt32(MemoryLayout<Float64>.size)
+    var rateAddr = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyNominalSampleRate,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    let rateStatus = AudioObjectGetPropertyData(
+        deviceID, &rateAddr, 0, nil, &sampleRateSize, &sampleRate
+    )
+    guard rateStatus == noErr, sampleRate > 0 else { return nil }
+    return sampleRate
 }
 
 // MARK: - Grabador
@@ -38,8 +74,10 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private let sysQueue = DispatchQueue(label: "com.resomer.audio.sys")
     private let micQueue = DispatchQueue(label: "com.resomer.audio.mic")
 
-    // Parámetros de salida comunes.
-    private let sampleRate: Double = 48_000
+    // Parámetros de salida comunes. sampleRate se ajusta en start() a la
+    // frecuencia nominal real del dispositivo de salida actual (ver
+    // currentOutputSampleRate); 48kHz es solo el valor de respaldo.
+    private var sampleRate: Double = 48_000
     private let channels: AVAudioChannelCount = 2
 
     // Buffer FIFO del micrófono (float intercalado estéreo @48k) para mezclar
@@ -95,6 +133,14 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         }
 
         let filter = SCContentFilter(display: display, excludingWindows: [])
+
+        // Usar la frecuencia real del dispositivo de salida en vez de forzar
+        // un valor fijo, para no obligar a CoreAudio a reconfigurar el
+        // hardware de audio (lo que puede causar una bajada de volumen en
+        // vivo mientras se graba).
+        if let systemRate = currentOutputSampleRate() {
+            sampleRate = systemRate
+        }
 
         let config = SCStreamConfiguration()
         config.capturesAudio = true

@@ -39,6 +39,8 @@ fn build_audio_helper() {
         .arg("AVFoundation")
         .arg("-framework")
         .arg("CoreMedia")
+        .arg("-framework")
+        .arg("CoreAudio")
         .arg("-o")
         .arg(&helper_bin)
         .arg(&swift_src)
