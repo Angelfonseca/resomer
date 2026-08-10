@@ -7,6 +7,8 @@ export interface Meeting {
   created_at: string
   audio_path: string | null
   state: "recording" | "processing" | "completed" | "error"
+  expected_speakers: number | null
+  category: string | null
 }
 
 export function useMeetings() {
@@ -32,11 +34,11 @@ export function useMeetings() {
   }, [refreshMeetings])
 
   const createMeeting = useCallback(
-    async (title: string) => {
+    async (title: string, category: string | null = null) => {
       setLoading(true)
       setError("")
       try {
-        const meeting = await invoke<Meeting>("create_meeting", { title })
+        const meeting = await invoke<Meeting>("create_meeting", { title, expectedSpeakers: null, category })
         setMeetings((prev) => [meeting, ...prev])
         return meeting
       } catch (err) {
@@ -49,6 +51,30 @@ export function useMeetings() {
     },
     []
   )
+
+  const setMeetingCategory = useCallback(async (id: string, category: string | null) => {
+    const previous = meetings
+    // Actualización optimista, igual que el borrado: se refleja de inmediato
+    // y se revierte si el backend falla.
+    setMeetings((prev) => prev.map((m) => (m.id === id ? { ...m, category } : m)))
+    
+    // Si es un ID temporal ("local-..."), no intentamos guardar en el backend todavía
+    if (id.startsWith("local-")) {
+      return
+    }
+
+    try {
+      await invoke("update_meeting_category", { meetingId: id, category })
+      // Forzar recarga para garantizar consistencia, especialmente importante
+      // si la categoría era "Nueva categoría..." y necesita propagarse
+      await refreshMeetings()
+    } catch (err) {
+      setMeetings(previous)
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+      throw err
+    }
+  }, [meetings, refreshMeetings])
 
   const deleteMeeting = useCallback(async (id: string) => {
     const previous = meetings
@@ -71,6 +97,7 @@ export function useMeetings() {
     error,
     createMeeting,
     deleteMeeting,
+    setMeetingCategory,
     refreshMeetings,
     setMeetings,
   }

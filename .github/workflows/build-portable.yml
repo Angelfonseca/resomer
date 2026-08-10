@@ -1,0 +1,72 @@
+name: Build portable (.app.zip)
+
+# Igual que build-installer.yml pero empaqueta el .app suelto (sin instalador)
+# como zip, para quienes prefieren copiarlo y ejecutarlo sin pasar por el DMG.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14 # Apple Silicon
+            target: aarch64-apple-darwin
+          - runner: macos-13 # Intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build .app
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles app
+        env:
+          # Firma ad-hoc por defecto; ver build-installer.yml para notarización real.
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Zip .app (portable)
+        run: |
+          cd src-tauri/target/${{ matrix.target }}/release/bundle/macos
+          ditto -c -k --sequesterRsrc --keepParent Resomer.app "Resomer-${{ matrix.target }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resomer-portable-${{ matrix.target }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.zip
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.zip

@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 export type RecordingSource = 'microphone' | 'system_audio' | 'both';
 export type RecordingState = 'idle' | 'recording' | 'paused' | 'stopped';
@@ -105,6 +106,36 @@ export const useRecording = () => {
     }
   }, [recording]);
 
+  // Adopta el estado de una grabación ya iniciada por el backend (p. ej. desde
+  // el ícono de la barra de estado) sin volver a arrancar el grabador. Permite
+  // que la UI muestre el cronómetro y el botón de detener al abrir la app.
+  const attachRecording = useCallback(
+    (info: { meetingId: string; filePath: string; source: RecordingSource }) => {
+      setRecording({
+        meetingId: info.meetingId,
+        state: 'recording',
+        source: info.source,
+        filePath: info.filePath,
+        durationMs: 0,
+        startedAt: new Date().toISOString(),
+      });
+    },
+    []
+  );
+
+  // El helper de audio del sistema puede morir a mitad de grabación (p. ej.
+  // permiso revocado o proceso caído). El backend lo detecta y emite este
+  // evento; sin esto, la UI seguiría mostrando "grabando" indefinidamente.
+  useEffect(() => {
+    const unlistenPromise = listen<string>('system-audio-crashed', (event) => {
+      setError(event.payload);
+      setRecording((prev) => (prev?.state === 'recording' ? { ...prev, state: 'stopped' } : prev));
+    });
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
   const pauseRecording = useCallback(async () => {
     setIsLoading(true);
     setError(null);
@@ -132,5 +163,6 @@ export const useRecording = () => {
     startRecording,
     stopRecording,
     pauseRecording,
+    attachRecording,
   };
 };

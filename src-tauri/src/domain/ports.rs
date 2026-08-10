@@ -13,7 +13,11 @@ pub trait AudioRecorder: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait DiarizationEngine: Send + Sync {
-    async fn diarize(&self, audio_path: &str) -> Result<Vec<Segment>, ResomerError>;
+    async fn diarize(
+        &self,
+        audio_path: &str,
+        num_speakers: Option<i32>,
+    ) -> Result<Vec<Segment>, ResomerError>;
 }
 
 #[async_trait::async_trait]

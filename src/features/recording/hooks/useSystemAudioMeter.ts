@@ -3,34 +3,42 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
 const BAR_COUNT = 48
 
+interface AudioLevels {
+  system: number
+  mic: number
+}
+
+const emptyLevels = () => new Array(BAR_COUNT).fill(0)
+
 /**
- * Nivel de audio en vivo REAL del audio del sistema (y del micrófono cuando
- * está mezclado en modo "ambos"), calculado por el helper de Swift a partir
- * del audio que efectivamente se está escribiendo al WAV, y reenviado desde
- * Rust como evento Tauri "system-audio-level". A diferencia de useAudioMeter
- * (que abre un getUserMedia aparte solo para visualizar el micrófono), esto
- * refleja la señal real capturada — útil para confirmar que el audio del
- * sistema realmente se está grabando.
+ * Nivel de audio en vivo REAL del audio del sistema y del micrófono (medidos
+ * por separado, incluso cuando están mezclados en modo "ambos"), calculado
+ * por el helper de Swift a partir del audio que efectivamente se está
+ * escribiendo al WAV, y reenviado desde Rust como evento Tauri
+ * "system-audio-level". A diferencia de useAudioMeter (que abre un
+ * getUserMedia aparte solo para visualizar el micrófono), esto refleja la
+ * señal real capturada — útil para confirmar que el audio realmente se está
+ * grabando y para distinguir visualmente ambas fuentes en modo "ambos".
  */
 export function useSystemAudioMeter(active: boolean) {
-  const [levels, setLevels] = useState<number[]>(() => new Array(BAR_COUNT).fill(0))
+  const [systemLevels, setSystemLevels] = useState<number[]>(emptyLevels)
+  const [micLevels, setMicLevels] = useState<number[]>(emptyLevels)
   const unlistenRef = useRef<UnlistenFn | null>(null)
 
   useEffect(() => {
     if (!active) {
-      setLevels(new Array(BAR_COUNT).fill(0))
+      setSystemLevels(emptyLevels())
+      setMicLevels(emptyLevels())
       return
     }
 
     let cancelled = false
 
-    listen<number>("system-audio-level", (event) => {
-      const value = Math.min(1, Math.max(0, event.payload))
-      setLevels((prev) => {
-        const next = prev.slice(1)
-        next.push(value)
-        return next
-      })
+    listen<AudioLevels>("system-audio-level", (event) => {
+      const system = Math.min(1, Math.max(0, event.payload.system))
+      const mic = Math.min(1, Math.max(0, event.payload.mic))
+      setSystemLevels((prev) => [...prev.slice(1), system])
+      setMicLevels((prev) => [...prev.slice(1), mic])
     }).then((unlisten) => {
       if (cancelled) {
         unlisten()
@@ -46,5 +54,5 @@ export function useSystemAudioMeter(active: boolean) {
     }
   }, [active])
 
-  return levels
+  return { systemLevels, micLevels }
 }

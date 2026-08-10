@@ -1,15 +1,20 @@
-import { AudioLines, Mic, Workflow, Settings2 } from "lucide-react"
-import { motion } from "motion/react"
+import { useMemo } from "react"
+import { AudioLines, CalendarClock, CheckCircle2, Mic, Sparkles, Workflow, Settings2, Folder } from "lucide-react"
+import { motion, AnimatePresence } from "motion/react"
 import { cn } from "../../lib/cn"
 import { StatusDot } from "../ui/StatusDot"
 import type { Meeting } from "../../features/meetings/hooks/useMeetings"
+import { useSidebarActivity } from "../../features/meetings/hooks/useSidebarActivity"
+import logo from "../../assets/logo.png"
 
-export type View = "studio" | "recording" | "pipeline" | "settings"
+export type View = "studio" | "recording" | "pipeline" | "meetings" | "assistant" | "settings"
 
 const NAV_ITEMS: { id: View; label: string; icon: typeof AudioLines }[] = [
   { id: "studio", label: "Studio", icon: AudioLines },
   { id: "recording", label: "Grabar", icon: Mic },
   { id: "pipeline", label: "Pipeline", icon: Workflow },
+  { id: "meetings", label: "Reuniones", icon: CalendarClock },
+  { id: "assistant", label: "Asistente", icon: Sparkles },
   { id: "settings", label: "Ajustes", icon: Settings2 },
 ]
 
@@ -36,20 +41,31 @@ export function Sidebar({
   meetings,
   pipelineEnabled,
   hasApiKey,
+  onOpenMeeting,
 }: {
   currentView: View
   onNavigate: (view: View) => void
   meetings: Meeting[]
   pipelineEnabled: boolean
   hasApiKey: boolean | null
+  onOpenMeeting?: (meeting: Meeting) => void
 }) {
+  // Solo actividad en curso (grabando/procesando/error) más las que acaban
+  // de completarse (con aviso, 20s) — la lista completa, con búsqueda y
+  // filtros, vive en la vista "Reuniones".
+  const activity = useSidebarActivity(meetings)
+
+  const availableCategories = useMemo(() => {
+    const set = new Set(["Clientes", "Interno", "Personal"])
+    for (const m of meetings) if (m.category) set.add(m.category)
+    return [...set].sort((a, b) => a.localeCompare(b))
+  }, [meetings])
+
   return (
     <aside className="flex w-60 shrink-0 flex-col border-r border-hairline bg-canvas-raised">
       {/* Brand */}
       <div className="flex items-center gap-2.5 px-5 py-5">
-        <div className="flex size-8 items-center justify-center rounded-md border border-signal/40 bg-signal-dim font-display text-sm font-bold text-signal">
-          R
-        </div>
+        <img src={logo} alt="Resomer" className="size-9 shrink-0 rounded-md object-contain" />
         <span className="font-display text-[15px] font-semibold tracking-tight text-ink">
           Resomer
         </span>
@@ -93,31 +109,96 @@ export function Sidebar({
         })}
       </nav>
 
-      {/* Meetings library */}
+      {/* Categorías */}
+      <div className="mt-6 flex flex-col px-3">
+        <div className="flex items-center justify-between px-3 pb-2">
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-mute">
+            Categorías
+          </span>
+        </div>
+        <div className="space-y-0.5">
+          {availableCategories.map((cat) => (
+            <button
+              key={cat}
+              onClick={() => {
+                onNavigate("meetings")
+                // TODO: Idealmente aquí podríamos pasar el filtro a MeetingsView
+              }}
+              className="group flex w-full items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-panel-hover"
+            >
+              <Folder className="size-3.5 shrink-0 text-ink-mute group-hover:text-ink-dim" />
+              <span className="truncate text-xs font-medium text-ink-dim group-hover:text-ink">
+                {cat}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* En curso: solo actividad activa/reciente — la biblioteca completa
+          vive en "Reuniones". */}
       <div className="mt-6 flex min-h-0 flex-1 flex-col px-3">
-        <p className="px-3 pb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-mute">
-          Reuniones
-        </p>
+        <button
+          onClick={() => onNavigate("meetings")}
+          className="flex items-center justify-between px-3 pb-2 text-left hover:text-ink"
+        >
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-mute">
+            En curso
+          </span>
+          {meetings.length > 0 && (
+            <span className="font-mono text-[10px] text-ink-mute">Ver todas</span>
+          )}
+        </button>
         <div className="flex-1 space-y-0.5 overflow-y-auto">
-          {meetings.length === 0 && (
+          {activity.length === 0 && (
             <p className="px-3 py-2 text-xs text-ink-mute">
-              Tus grabaciones aparecerán aquí.
+              No hay grabaciones activas.
             </p>
           )}
-          {meetings.map((meeting) => (
-            <div
-              key={meeting.id}
-              className="group flex items-center gap-2.5 rounded-md px-3 py-2 hover:bg-panel-hover"
-            >
-              <StatusDot tone={meetingStateTone[meeting.state]} pulse={meeting.state === "recording"} />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-xs font-medium text-ink">{meeting.title}</p>
-                <p className="font-mono text-[10px] text-ink-mute">
-                  {relativeTime(meeting.created_at)}
-                </p>
-              </div>
-            </div>
-          ))}
+          <AnimatePresence initial={false}>
+            {activity.map(({ meeting, justFinished }) => {
+              const canOpen = Boolean(
+                onOpenMeeting && meeting.audio_path && meeting.state !== "recording"
+              )
+              return (
+                <motion.button
+                  key={meeting.id}
+                  layout
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  onClick={canOpen ? () => onOpenMeeting?.(meeting) : undefined}
+                  disabled={!canOpen}
+                  className={cn(
+                    "group flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left",
+                    canOpen ? "hover:bg-panel-hover cursor-pointer" : "cursor-default opacity-70"
+                  )}
+                >
+                  <StatusDot
+                    tone={meetingStateTone[meeting.state]}
+                    pulse={meeting.state === "recording" || meeting.state === "processing"}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-medium text-ink">{meeting.title}</p>
+                    {justFinished ? (
+                      <p className="flex items-center gap-1 font-mono text-[10px] text-done">
+                        <CheckCircle2 className="size-3" strokeWidth={2} />
+                        Pipeline terminado
+                      </p>
+                    ) : meeting.state === "processing" ? (
+                      <p className="font-mono text-[10px] text-signal">Procesando…</p>
+                    ) : meeting.state === "error" ? (
+                      <p className="font-mono text-[10px] text-rec">Error · reintentar</p>
+                    ) : (
+                      <p className="font-mono text-[10px] text-ink-mute">
+                        {relativeTime(meeting.created_at)}
+                      </p>
+                    )}
+                  </div>
+                </motion.button>
+              )
+            })}
+          </AnimatePresence>
         </div>
       </div>
 

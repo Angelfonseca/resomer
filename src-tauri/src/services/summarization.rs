@@ -77,55 +77,67 @@ impl LlmSummarizer {
         chunks
     }
 
-    // Prompt en español para resumen
-    fn create_summary_prompt(transcript: &str) -> String {
-        format!(
-            r#"Analiza el siguiente transcript de una reunión y proporciona un resumen ejecutivo en español usando Markdown.
+    // Prompt en español para resumen. `instructions` son indicaciones del
+    // usuario sobre qué espera del resumen (p. ej. "enfócate en lo técnico",
+    // "más corto", "no menciones nombres") — se priorizan sobre la estructura
+    // por defecto cuando entran en conflicto.
+    fn create_summary_prompt(transcript: &str, instructions: Option<&str>) -> String {
+        let instructions_block = match instructions {
+            Some(i) if !i.trim().is_empty() => format!(
+                "\nInstrucciones del usuario sobre este resumen (tenlas en cuenta y \
+                 priorízalas por encima de la estructura por defecto si entran en \
+                 conflicto):\n{}\n",
+                i.trim()
+            ),
+            _ => String::new(),
+        };
 
-El resumen debe estructurarse así:
+        format!(
+            r#"Analiza el siguiente transcript de una reunión y redacta un resumen ejecutivo extenso y detallado en español usando Markdown. No te limites a un esquema mínimo: desarrolla cada sección con la profundidad suficiente para que alguien que no asistió entienda por completo qué pasó, por qué, y qué sigue.
+{}
+Estructura el resumen así:
 
 ## Resumen Ejecutivo
-[1-2 párrafos resumiendo el propósito y conclusión de la reunión]
+[3-4 párrafos que expliquen el propósito de la reunión, el contexto, los puntos de discusión más importantes y las conclusiones generales. Sé narrativo y completo, no telegráfico.]
 
 ## Temas Principales
-- [Tema 1]
-- [Tema 2]
-- [Tema 3]
-- [etc...]
+Para cada tema relevante, usa un subtítulo ### con el nombre del tema seguido de 1-2 párrafos que expliquen qué se discutió, qué posturas surgieron y en qué se concluyó.
 
 ## Decisiones Tomadas
-- [Decisión 1]
-- [Decisión 2]
-- [etc...]
+- [Cada decisión con una frase de contexto que explique por qué se tomó]
 
 ## Próximos Pasos
-- [ ] [Acción 1] - Responsable: [Persona]
-- [ ] [Acción 2] - Responsable: [Persona]
-- [etc...]
+- [ ] [Acción concreta] — Responsable: [Persona] — Plazo: [si se mencionó]
 
-## Notas
-[Cualquier información adicional importante]
+## Puntos Abiertos / Pendientes de Definir
+- [Temas que quedaron sin resolver o que requieren seguimiento]
+
+## Notas Adicionales
+[Cualquier detalle importante: cifras, nombres, referencias, riesgos o menciones relevantes]
 
 Recuerda:
-- Usa Markdown válido con encabezados # y ##
-- Usa listas con guiones (-)
-- Usa casillas de verificación [ ] para acciones
-- Sé conciso y claro
-- Mantén el contenido en español
+- Usa Markdown válido (encabezados ##/###, listas con guiones, casillas [ ] para acciones)
+- Sé exhaustivo pero claro; prioriza la utilidad sobre la brevedad
+- Mantén todo el contenido en español
+- Si una sección no aplica porque no hubo contenido, omítela en vez de inventar
 
 Transcript:
 {}
 
 Resumen:"#,
-            transcript
+            instructions_block, transcript
         )
     }
-}
 
-#[async_trait]
-impl crate::domain::Summarizer for LlmSummarizer {
-    async fn summarize(&self, text: &str) -> Result<String, ResomerError> {
-        // Si el texto es muy largo, resumir en chunks y combinar
+    /// Resumen con instrucciones opcionales del usuario sobre qué espera del
+    /// resultado (p. ej. "enfócate en las decisiones técnicas", "más breve").
+    /// Es el método que usan tanto el resumen inicial del pipeline como
+    /// "Regenerar" — la única diferencia entre ambos es si hay `instructions`.
+    pub async fn summarize_with_instructions(
+        &self,
+        text: &str,
+        instructions: Option<&str>,
+    ) -> Result<String, ResomerError> {
         let chunks = Self::chunk_text(text, 2000); // Máx 2000 tokens por chunk
 
         if chunks.len() > 1 {
@@ -133,19 +145,59 @@ impl crate::domain::Summarizer for LlmSummarizer {
             let mut chunk_summaries = vec![];
 
             for chunk in chunks {
-                let prompt = Self::create_summary_prompt(&chunk);
+                let prompt = Self::create_summary_prompt(&chunk, instructions);
                 let summary = self.call_llm(&prompt).await?;
                 chunk_summaries.push(summary);
             }
 
             // Combinar summaries y hacer resumen final
             let combined = chunk_summaries.join("\n\n");
-            let final_prompt = Self::create_summary_prompt(&combined);
+            let final_prompt = Self::create_summary_prompt(&combined, instructions);
             self.call_llm(&final_prompt).await
         } else {
             // Texto corto, resumen directo
-            let prompt = Self::create_summary_prompt(text);
+            let prompt = Self::create_summary_prompt(text, instructions);
             self.call_llm(&prompt).await
         }
+    }
+
+    /// Genera un título corto y descriptivo para la reunión a partir de su
+    /// resumen (o transcript). Una sola llamada barata: el frontend lo dispara
+    /// tras el resumen y lo deja editable.
+    pub async fn generate_title(&self, text: &str) -> Result<String, ResomerError> {
+        // Solo el inicio: para titular basta el arranque de la reunión y evita
+        // mandar transcripts enormes por una frase.
+        let excerpt: String = text.chars().take(4000).collect();
+        let prompt = format!(
+            r#"Genera un título corto y descriptivo en español para esta reunión, de 3 a 8 palabras. Debe capturar el tema central. Responde ÚNICAMENTE con el título, sin comillas, sin punto final, sin prefijos como "Título:".
+
+Contenido de la reunión:
+{}
+
+Título:"#,
+            excerpt
+        );
+        let title = self.call_llm(&prompt).await?;
+        // Saneado: una sola línea, sin comillas ni longitud excesiva.
+        let title = title
+            .trim()
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim_matches(|c| c == '"' || c == '\'' || c == '.')
+            .trim()
+            .to_string();
+        Ok(if title.is_empty() {
+            "Reunión".to_string()
+        } else {
+            title.chars().take(80).collect()
+        })
+    }
+}
+
+#[async_trait]
+impl crate::domain::Summarizer for LlmSummarizer {
+    async fn summarize(&self, text: &str) -> Result<String, ResomerError> {
+        self.summarize_with_instructions(text, None).await
     }
 }

@@ -8,6 +8,7 @@ export function AppShell({
   meetings,
   pipelineEnabled,
   hasApiKey,
+  onOpenMeeting,
   children,
 }: {
   currentView: View
@@ -15,6 +16,7 @@ export function AppShell({
   meetings: Meeting[]
   pipelineEnabled: boolean
   hasApiKey: boolean | null
+  onOpenMeeting?: (meeting: Meeting) => void
   children: ReactNode
 }) {
   return (
@@ -25,6 +27,7 @@ export function AppShell({
         meetings={meetings}
         pipelineEnabled={pipelineEnabled}
         hasApiKey={hasApiKey}
+        onOpenMeeting={onOpenMeeting}
       />
       <div className="flex min-w-0 flex-1 flex-col">{children}</div>
     </div>

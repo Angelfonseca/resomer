@@ -48,6 +48,14 @@ impl ConfigManager {
     pub fn chat_endpoint(&self) -> String {
         format!("{}/chat/completions", self.config.api_base_url)
     }
+
+    pub fn embeddings_endpoint(&self) -> String {
+        format!("{}/embeddings", self.config.api_base_url)
+    }
+
+    pub fn rerank_endpoint(&self) -> String {
+        format!("{}/rerank", self.config.api_base_url)
+    }
 }
 
 impl Default for ConfigManager {

@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::Emitter;
 
@@ -13,9 +14,28 @@ use tauri::Emitter;
 /// sistema (audio interno) de forma nativa, sin depender de apps externas.
 const HELPER_PATH: Option<&str> = option_env!("RESOMER_AUDIO_HELPER");
 
-/// Evento Tauri emitido con el nivel de audio en vivo (0.0–1.0) mientras se
-/// captura audio del sistema, para que la UI pueda visualizarlo.
+/// Evento Tauri emitido con el nivel de audio en vivo (0.0–1.0) de sistema y
+/// micrófono por separado mientras se captura audio del sistema, para que la
+/// UI (y el ícono de la barra de estado) puedan visualizar ambas señales.
 const LEVEL_EVENT: &str = "system-audio-level";
+
+/// Payload del evento de nivel: pico de sistema y de micrófono medidos por
+/// separado antes de mezclarlos. `mic` es 0.0 cuando no se captura micrófono.
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct AudioLevels {
+    pub system: f32,
+    pub mic: f32,
+}
+
+/// Evento Tauri emitido si el helper muere a mitad de grabación (no por un
+/// stop/pause pedido desde la app), para que la UI lo muestre en vez de
+/// seguir mostrando "grabando" indefinidamente.
+const CRASH_EVENT: &str = "system-audio-crashed";
+
+/// Cuánto esperar a que el helper confirme el arranque real de la captura
+/// (línea "READY") antes de darlo por fallido. SCShareableContent (el check
+/// de permiso de Grabación de pantalla) puede tardar más de un segundo.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Graba el audio del sistema (audio interno) lanzando el helper de Swift
 /// basado en ScreenCaptureKit y controlándolo como proceso hijo. Se detiene
@@ -27,6 +47,10 @@ pub struct SystemAudioRecorder {
     child: Mutex<Option<Child>>,
     capture_mic: bool,
     app: tauri::AppHandle,
+    // Marcado antes de pedirle al helper que termine (stop/pause), para que
+    // el hilo lector de stdout distinga "lo detuvimos nosotros" de "el
+    // helper murió solo" cuando ve el EOF.
+    stopping: Arc<AtomicBool>,
 }
 
 impl SystemAudioRecorder {
@@ -41,6 +65,7 @@ impl SystemAudioRecorder {
             child: Mutex::new(None),
             capture_mic,
             app,
+            stopping: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -140,6 +165,8 @@ impl AudioRecorder for SystemAudioRecorder {
             command.arg("--mic");
         }
 
+        self.stopping.store(false, Ordering::SeqCst);
+
         let mut child = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -148,45 +175,70 @@ impl AudioRecorder for SystemAudioRecorder {
                 ResomerError::RecordingError(format!("No se pudo lanzar el helper de audio: {}", e))
             })?;
 
-        // Detectar fallo temprano (p. ej. permiso de Grabación de pantalla
-        // denegado): si el helper sale en el primer ~1.5s, leer stderr y
-        // devolver un mensaje claro en vez de fingir que está grabando.
-        for _ in 0..15 {
-            match child.try_wait() {
-                Ok(Some(_status)) => {
-                    let mut err = String::new();
-                    if let Some(mut se) = child.stderr.take() {
-                        let _ = se.read_to_string(&mut err);
-                    }
-                    return Err(ResomerError::RecordingError(Self::describe_startup_error(&err)));
-                }
-                Ok(None) => tokio::time::sleep(Duration::from_millis(100)).await,
-                Err(e) => {
-                    return Err(ResomerError::RecordingError(format!(
-                        "Error monitorizando el helper de audio: {}",
-                        e
-                    )))
-                }
-            }
-        }
+        let stdout = child.stdout.take().expect("stdout piped");
 
-        // El helper sigue vivo: leer su stdout en un hilo aparte y reenviar
-        // cada línea "LVL <0..1>" como evento Tauri para el medidor en vivo.
-        // Es imprescindible consumir el stdout del hijo: si nadie lee y el
-        // pipe se llena, el helper se bloquearía al escribir.
-        if let Some(stdout) = child.stdout.take() {
-            let app = self.app.clone();
-            std::thread::spawn(move || {
-                let reader = BufReader::new(stdout);
-                for line in reader.lines() {
-                    let Ok(line) = line else { break };
-                    if let Some(rest) = line.strip_prefix("LVL ") {
-                        if let Ok(level) = rest.trim().parse::<f32>() {
-                            let _ = app.emit(LEVEL_EVENT, level);
+        // Hilo lector: consume stdout durante toda la vida del proceso. Antes
+        // de la primera línea "READY" (arranque real de la captura), reenvía
+        // esa señal por el canal `ready_tx`. Después, reenvía cada línea
+        // "LVL <0..1>" como evento Tauri para el medidor en vivo. Es
+        // imprescindible consumir el stdout del hijo: si nadie lee y el pipe
+        // se llena, el helper se bloquearía al escribir.
+        //
+        // Si el stdout se cierra (EOF) después de haber visto "READY" y sin
+        // que la app haya pedido detener la captura, el helper murió a mitad
+        // de grabación: se notifica a la UI en vez de dejarla creyendo que
+        // sigue grabando.
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        let app = self.app.clone();
+        let stopping = self.stopping.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            let mut ready_sent = false;
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                if !ready_sent && line.trim() == "READY" {
+                    ready_sent = true;
+                    let _ = ready_tx.send(());
+                    continue;
+                }
+                if let Some(rest) = line.strip_prefix("LVL ") {
+                    let mut parts = rest.trim().split_whitespace();
+                    if let (Some(sys_str), Some(mic_str)) = (parts.next(), parts.next()) {
+                        if let (Ok(system), Ok(mic)) =
+                            (sys_str.parse::<f32>(), mic_str.parse::<f32>())
+                        {
+                            let _ = app.emit(LEVEL_EVENT, AudioLevels { system, mic });
                         }
                     }
                 }
-            });
+            }
+            if ready_sent && !stopping.load(Ordering::SeqCst) {
+                let _ = app.emit(
+                    CRASH_EVENT,
+                    "La captura de audio del sistema se interrumpió inesperadamente.",
+                );
+            }
+        });
+
+        // Esperar a que el helper confirme el arranque real ("READY") o a
+        // que el canal se cierre porque stdout llegó a EOF sin haber enviado
+        // "READY" (el proceso murió antes de arrancar, p. ej. permiso
+        // denegado). El timeout cubre el caso de que se quede colgado sin
+        // salir ni confirmar.
+        let ready = tokio::task::spawn_blocking(move || ready_rx.recv_timeout(STARTUP_TIMEOUT))
+            .await
+            .unwrap_or(Err(std::sync::mpsc::RecvTimeoutError::Disconnected));
+
+        if ready.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let mut err = String::new();
+            if let Some(mut se) = child.stderr.take() {
+                let _ = se.read_to_string(&mut err);
+            }
+            return Err(ResomerError::RecordingError(Self::describe_startup_error(
+                &err,
+            )));
         }
 
         *self.child.lock().unwrap() = Some(child);
@@ -194,6 +246,7 @@ impl AudioRecorder for SystemAudioRecorder {
     }
 
     async fn stop_recording(&self) -> Result<(), ResomerError> {
+        self.stopping.store(true, Ordering::SeqCst);
         let child = self.child.lock().unwrap().take();
         if let Some(mut child) = child {
             Self::terminate_gracefully(&mut child)?;
@@ -204,6 +257,7 @@ impl AudioRecorder for SystemAudioRecorder {
     async fn pause_recording(&self) -> Result<(), ResomerError> {
         // ScreenCaptureKit no expone pausa nativa; detenemos la captura.
         // (El flujo de la app trata pausa como detener temporalmente.)
+        self.stopping.store(true, Ordering::SeqCst);
         let child = self.child.lock().unwrap().take();
         if let Some(mut child) = child {
             Self::terminate_gracefully(&mut child)?;

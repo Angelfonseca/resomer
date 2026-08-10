@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tauri = { version = "2", features = ["custom-protocol"] }
+tauri = { version = "2", features = ["custom-protocol", "tray-icon", "image-png"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -20,6 +20,7 @@ async-trait = "0.1"
 keyring = "2.1"
 rusqlite = { version = "0.30", features = ["bundled", "chrono", "uuid"] }
 tauri-plugin-store = "2"
+tauri-plugin-notification = "2"
 sherpa-onnx = { version = "1.13.4", default-features = false, features = ["static"] }
 libc = "0.2"
 

@@ -89,29 +89,39 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     // Límite del FIFO (~2 s) para evitar crecimiento sin límite si hay deriva.
     private lazy var micRingCap = Int(sampleRate) * Int(channels) * 2
 
-    // Emisión de nivel de audio (para visualización en vivo en la UI).
-    // Se imprime "LVL <0..1>\n" a stdout, limitado a ~15 veces por segundo.
+    // Emisión de nivel de audio (para visualización en vivo en la UI, con
+    // sistema y micrófono diferenciados). Se imprime "LVL <sys> <mic>\n" a
+    // stdout, limitado a ~15 veces por segundo. <mic> es 0 cuando no se está
+    // mezclando micrófono.
     private var lastLevelEmit: Date = .distantPast
     private let levelEmitInterval: TimeInterval = 1.0 / 15.0
     private let stdoutQueue = DispatchQueue(label: "com.resomer.audio.stdout")
 
-    private func emitLevel(_ pcmBuffer: AVAudioPCMBuffer, frames: Int) {
+    private func peakOf(_ ptr: UnsafeMutablePointer<Float>, count: Int) -> Float {
+        var peak: Float = 0
+        for i in 0..<count {
+            peak = max(peak, abs(ptr[i]))
+        }
+        return peak
+    }
+
+    private func peakOf(_ values: [Float]) -> Float {
+        var peak: Float = 0
+        for v in values {
+            peak = max(peak, abs(v))
+        }
+        return peak
+    }
+
+    private func emitLevels(system: Float, mic: Float) {
         let now = Date()
         guard now.timeIntervalSince(lastLevelEmit) >= levelEmitInterval else { return }
         lastLevelEmit = now
 
-        guard let data = pcmBuffer.floatChannelData else { return }
-        var peak: Float = 0
-        let channelCount = Int(pcmBuffer.format.channelCount)
-        for c in 0..<channelCount {
-            let ch = data[c]
-            for i in 0..<frames {
-                peak = max(peak, abs(ch[i]))
-            }
-        }
-        let level = min(1.0, peak)
+        let sys = min(1.0, system)
+        let mic = min(1.0, mic)
         stdoutQueue.async {
-            FileHandle.standardOutput.write(Data("LVL \(level)\n".utf8))
+            FileHandle.standardOutput.write(Data("LVL \(sys) \(mic)\n".utf8))
         }
     }
 
@@ -309,11 +319,24 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         )
         guard status == noErr else { return }
 
+        // Medir el pico del sistema ANTES de mezclar el micrófono, para poder
+        // mostrar ambas señales por separado en la UI (no solo la mezcla).
+        var systemPeak: Float = 0
+        if let sysData = pcmBuffer.floatChannelData {
+            let n = Int(frames)
+            let channelCount = Int(pcmBuffer.format.channelCount)
+            for c in 0..<channelCount {
+                systemPeak = max(systemPeak, peakOf(sysData[c], count: n))
+            }
+        }
+
         // Mezclar micrófono si está activo y el formato del sistema es float
         // no-intercalado con 2 canales (lo habitual en ScreenCaptureKit).
+        var micPeak: Float = 0
         if captureMic, let sysData = pcmBuffer.floatChannelData, inFormat.channelCount >= 2 {
             let n = Int(frames)
             let mic = popMic(frames: n)
+            micPeak = peakOf(mic)
             let ch0 = sysData[0]
             let ch1 = sysData[1]
             for i in 0..<n {
@@ -322,7 +345,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         }
 
-        emitLevel(pcmBuffer, frames: Int(frames))
+        emitLevels(system: systemPeak, mic: micPeak)
 
         do {
             try audioFile.write(from: pcmBuffer)

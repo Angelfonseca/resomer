@@ -1,15 +1,23 @@
+pub mod align;
+pub mod chat;
 pub mod devices;
 pub mod diarization;
+pub mod embeddings;
 pub mod recording;
+pub mod rerank;
 pub mod storage;
 pub mod summarization;
 pub mod system_audio;
 pub mod transcription;
 
+pub use align::attribute_speakers;
+pub use chat::{ChatMessage, Conversation, GlobalAssistant, MeetingChatAssistant, SourceChunk};
 pub use devices::list_input_devices;
 pub use diarization::SherpaDiarizationEngine;
+pub use embeddings::{chunk_text, cosine_similarity, EmbeddingClient};
 pub use recording::CpalAudioRecorder;
-pub use storage::MeetingRepositoryImpl;
+pub use rerank::RerankClient;
+pub use storage::{ChunkRow, MeetingRepositoryImpl};
 pub use summarization::LlmSummarizer;
-pub use system_audio::SystemAudioRecorder;
-pub use transcription::CloudTranscriber;
+pub use system_audio::{AudioLevels, SystemAudioRecorder};
+pub use transcription::{CloudTranscriber, TranscriptSegment, TranscriptionOutput};

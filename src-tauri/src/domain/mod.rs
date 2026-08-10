@@ -6,4 +6,4 @@ pub mod segment;
 pub use meeting::Meeting;
 pub use ports::*;
 pub use recording::{Recording, RecordingSource, RecordingState};
-pub use segment::Segment;
+pub use segment::{Segment, SpeakerUtterance};

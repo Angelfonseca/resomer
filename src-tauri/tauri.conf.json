@@ -5,7 +5,7 @@
   "build": {
     "beforeBuildCommand": "npm run build:frontend",
     "beforeDevCommand": "npm run vite",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
   "app": {
@@ -26,8 +26,17 @@
     "active": true,
     "targets": ["app", "dmg"],
     "externalBin": ["binaries/resomer-audio-helper"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "macOS": {
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "signingIdentity": "Resomer Local Dev",
+      "entitlements": "entitlements.plist"
     }
   }
 }

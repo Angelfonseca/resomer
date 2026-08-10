@@ -52,6 +52,15 @@ pub struct TranscriptSegment {
     pub text: String,
 }
 
+/// Resultado completo de la transcripción: el texto plano (para resumen,
+/// embeddings y export) y los mismos contenidos troceados con marcas de
+/// tiempo (para cruzarlos con la diarización y saber quién dijo qué).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TranscriptionOutput {
+    pub text: String,
+    pub segments: Vec<TranscriptSegment>,
+}
+
 pub struct CloudTranscriber {
     api_endpoint: String,
     api_key: String,
@@ -135,8 +144,8 @@ impl CloudTranscriber {
         let resampled = if spec.sample_rate as i32 != WHISPER_SAMPLE_RATE {
             let resampler = LinearResampler::create(spec.sample_rate as i32, WHISPER_SAMPLE_RATE)
                 .ok_or_else(|| {
-                    ResomerError::Transcription("No se pudo inicializar el resampler".to_string())
-                })?;
+                ResomerError::Transcription("No se pudo inicializar el resampler".to_string())
+            })?;
             resampler.resample(&mono, true)
         } else {
             mono
@@ -193,7 +202,21 @@ impl CloudTranscriber {
         Ok(buffer.into_inner())
     }
 
-    async fn transcribe_chunk(&self, wav_bytes: Vec<u8>) -> Result<String, ResomerError> {
+    /// Transcribe un fragmento y devuelve sus segmentos con marcas de tiempo
+    /// *relativas al inicio del propio fragmento* (0 = principio del chunk).
+    /// El llamador les suma el offset global del chunk.
+    ///
+    /// Pedimos `verbose_json` para obtener los segmentos con tiempos que Whisper
+    /// ya calcula internamente — imprescindible para cruzarlos luego con la
+    /// diarización. Si el gateway no los devuelve (algún backend ignora
+    /// `response_format`), degradamos con elegancia a un único segmento que
+    /// abarca todo el chunk con el texto completo: la atribución por hablante
+    /// será más gruesa pero no se rompe.
+    async fn transcribe_chunk(
+        &self,
+        wav_bytes: Vec<u8>,
+        chunk_duration_secs: f32,
+    ) -> Result<Vec<TranscriptSegment>, ResomerError> {
         let part = reqwest::multipart::Part::bytes(wav_bytes)
             .file_name("chunk.wav")
             .mime_str("audio/wav")
@@ -201,7 +224,8 @@ impl CloudTranscriber {
 
         let form = reqwest::multipart::Form::new()
             .part("file", part)
-            .text("model", self.model.clone());
+            .text("model", self.model.clone())
+            .text("response_format", "verbose_json");
 
         let response = self
             .client
@@ -226,20 +250,54 @@ impl CloudTranscriber {
             .await
             .map_err(|e| ResomerError::Transcription(format!("Invalid response: {}", e)))?;
 
-        body["text"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| ResomerError::Transcription("Missing text in response".to_string()))
-    }
-}
+        // Camino normal: verbose_json trae un array `segments` con start/end/text.
+        if let Some(arr) = body["segments"].as_array() {
+            let segments: Vec<TranscriptSegment> = arr
+                .iter()
+                .filter_map(|s| {
+                    let text = s["text"].as_str()?.trim().to_string();
+                    if text.is_empty() {
+                        return None;
+                    }
+                    Some(TranscriptSegment {
+                        start: s["start"].as_f64().unwrap_or(0.0) as f32,
+                        end: s["end"].as_f64().unwrap_or(0.0) as f32,
+                        text,
+                    })
+                })
+                .collect();
+            if !segments.is_empty() {
+                return Ok(segments);
+            }
+        }
 
-#[async_trait]
-impl crate::domain::Transcriber for CloudTranscriber {
-    async fn transcribe(&self, audio_path: &str) -> Result<String, ResomerError> {
+        // Fallback: sin segmentos utilizables, usamos el texto plano completo
+        // como un único segmento que cubre todo el chunk.
+        match body["text"].as_str() {
+            Some(text) if !text.trim().is_empty() => Ok(vec![TranscriptSegment {
+                start: 0.0,
+                end: chunk_duration_secs,
+                text: text.trim().to_string(),
+            }]),
+            // Fragmento sin habla detectable: no es un error, simplemente no
+            // aporta texto.
+            _ => Ok(vec![]),
+        }
+    }
+
+    /// Transcribe el audio completo y devuelve tanto el texto plano como los
+    /// segmentos con marcas de tiempo *globales* (relativas al inicio de toda
+    /// la grabación). Tolera fallos por fragmento igual que antes: los salta y
+    /// deja constancia, y solo aborta si ningún fragmento se pudo transcribir.
+    pub async fn transcribe_full(
+        &self,
+        audio_path: &str,
+    ) -> Result<TranscriptionOutput, ResomerError> {
         let (spec, samples, chunks) = Self::chunk_audio_file(audio_path, MAX_CHUNK_DURATION_SECS)?;
         let total_chunks = chunks.len();
+        let sample_rate = spec.sample_rate as f32;
 
-        let mut all_transcripts = vec![];
+        let mut all_segments: Vec<TranscriptSegment> = vec![];
         let mut failed_chunks = 0usize;
         let mut last_error: Option<ResomerError> = None;
 
@@ -252,16 +310,22 @@ impl crate::domain::Transcriber for CloudTranscriber {
                 continue;
             }
 
+            // Offset global del chunk: los tiempos que devuelve Whisper son
+            // relativos al chunk, así que hay que reubicarlos en la línea de
+            // tiempo de toda la grabación.
+            let offset = start as f32 / sample_rate;
+            let chunk_duration = (end - start) as f32 / sample_rate;
+
             let wav_bytes = Self::encode_chunk_wav(spec, chunk_samples)?;
 
-            // Un fragmento individual puede fallar por razones ajenas a
-            // nuestro control (p. ej. este backend a veces devuelve 500 en
-            // tramos sin voz detectable, incluso cuando no son silencio
-            // digital puro — ver nota en SILENCE_RMS_THRESHOLD). En vez de
-            // abortar toda la transcripción de la reunión por un solo
-            // fragmento problemático, lo saltamos y seguimos con el resto.
-            match self.transcribe_chunk(wav_bytes).await {
-                Ok(transcript) => all_transcripts.push(transcript),
+            match self.transcribe_chunk(wav_bytes, chunk_duration).await {
+                Ok(segments) => {
+                    for mut seg in segments {
+                        seg.start += offset;
+                        seg.end += offset;
+                        all_segments.push(seg);
+                    }
+                }
                 Err(e) => {
                     failed_chunks += 1;
                     last_error = Some(e);
@@ -269,7 +333,7 @@ impl crate::domain::Transcriber for CloudTranscriber {
             }
         }
 
-        if all_transcripts.is_empty() && failed_chunks > 0 {
+        if all_segments.is_empty() && failed_chunks > 0 {
             // Ningún fragmento se transcribió: sí es un fallo real que hay
             // que reportar, con el último error de fondo para diagnóstico.
             return Err(ResomerError::Transcription(format!(
@@ -282,15 +346,29 @@ impl crate::domain::Transcriber for CloudTranscriber {
             )));
         }
 
-        let mut result = all_transcripts.join(" ");
+        let mut text = all_segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
         if failed_chunks > 0 {
-            result.push_str(&format!(
+            text.push_str(&format!(
                 "\n\n[Nota: {} de {} fragmentos de audio no pudieron transcribirse y se omitieron.]",
                 failed_chunks, total_chunks
             ));
         }
 
-        Ok(result)
+        Ok(TranscriptionOutput {
+            text,
+            segments: all_segments,
+        })
+    }
+}
+
+#[async_trait]
+impl crate::domain::Transcriber for CloudTranscriber {
+    async fn transcribe(&self, audio_path: &str) -> Result<String, ResomerError> {
+        Ok(self.transcribe_full(audio_path).await?.text)
     }
 }
 
@@ -325,6 +403,9 @@ mod manual_verification {
             Ok(text) => println!("OK ({} chars): {}", text.len(), text),
             Err(e) => println!("ERROR: {}", e),
         }
-        assert!(result.is_ok(), "la transcripción no debería abortar por completo");
+        assert!(
+            result.is_ok(),
+            "la transcripción no debería abortar por completo"
+        );
     }
 }

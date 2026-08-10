@@ -1,14 +1,19 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { AlertCircle, Play, RotateCcw, Sparkles, Workflow } from "lucide-react"
 import { motion } from "motion/react"
+import { invoke } from "@tauri-apps/api/core"
 import { usePipeline } from "../hooks/usePipeline"
 import { SpeakerTimeline } from "./SpeakerTimeline"
+import { SpeakerTranscript } from "./SpeakerTranscript"
 import { TextResultPanel } from "./TextResultPanel"
+import { SummaryPanel } from "./SummaryPanel"
+import { EditableTitle } from "./EditableTitle"
 import { Button } from "../../../components/ui/Button"
 import { Panel, PanelHeader, PanelBody } from "../../../components/ui/Panel"
 import { SignalRail, type RailStep } from "../../../components/ui/SignalRail"
 import { StatusDot } from "../../../components/ui/StatusDot"
 import { EmptyState } from "../../../components/ui/EmptyState"
+import { MeetingChat } from "../../chat"
 
 const STEPS: RailStep[] = [
   { key: "diarizing", label: "Diarizar" },
@@ -22,8 +27,46 @@ const STEP_LABEL: Record<string, string> = {
   summarizing: "Generando resumen…",
 }
 
-export function PipelineOrchestrator({ audioPath, meetingId }: { audioPath?: string; meetingId?: string }) {
-  const { state, runPipeline, reset, loadExisting, loadingExisting } = usePipeline()
+export function PipelineOrchestrator({
+  audioPath,
+  meetingId,
+  meetingTitle,
+  meetingCategory,
+  expectedSpeakers,
+  categories = [],
+  onSetCategory,
+  onMeetingUpdated,
+}: {
+  audioPath?: string
+  meetingId?: string
+  meetingTitle?: string
+  meetingCategory?: string | null
+  expectedSpeakers?: number | null
+  categories?: string[]
+  onSetCategory?: (id: string, category: string | null) => void
+  onMeetingUpdated?: () => void
+}) {
+  const {
+    state,
+    runPipeline,
+    reset,
+    loadExisting,
+    loadingExisting,
+    updateSummary,
+    regenerateSummary,
+    regenerating,
+    retrySave,
+  } = usePipeline(onMeetingUpdated)
+
+  const [isCreatingCategory, setIsCreatingCategory] = useState(false)
+  const [newCategoryName, setNewCategoryName] = useState("")
+
+  const saveTitle = (title: string) => {
+    if (!meetingId) return
+    invoke("update_meeting_title", { meetingId, title })
+      .then(() => onMeetingUpdated?.())
+      .catch(() => {})
+  }
 
   // Al entrar con una reunión existente, carga lo que ya haya guardado
   // (transcripción/resumen) en vez de asumir que hay que grabar/ejecutar de
@@ -68,6 +111,84 @@ export function PipelineOrchestrator({ audioPath, meetingId }: { audioPath?: str
 
   return (
     <div className="space-y-6">
+      {meetingId && meetingTitle && (
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex-1">
+            <EditableTitle title={meetingTitle} onSave={saveTitle} />
+          </div>
+          {onSetCategory && (
+            <div className="shrink-0 pt-1">
+              {isCreatingCategory ? (
+                <input
+                  autoFocus
+                  type="text"
+                  placeholder="Nueva categoría…"
+                  value={newCategoryName}
+                  onChange={(e) => setNewCategoryName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && newCategoryName.trim()) {
+                      e.preventDefault()
+                      onSetCategory(meetingId, newCategoryName.trim())
+                      setIsCreatingCategory(false)
+                      setNewCategoryName("")
+                    }
+                    if (e.key === "Escape") {
+                      setIsCreatingCategory(false)
+                      setNewCategoryName("")
+                    }
+                  }}
+                  onBlur={() => {
+                    if (newCategoryName.trim()) {
+                      onSetCategory(meetingId, newCategoryName.trim())
+                    }
+                    setIsCreatingCategory(false)
+                    setNewCategoryName("")
+                  }}
+                  className="w-36 rounded-control border border-signal/40 bg-canvas-raised px-2 py-1 font-mono text-[11px] text-ink placeholder:text-ink-mute focus:border-signal focus:outline-none"
+                />
+              ) : (
+                <select
+                  value={meetingCategory ?? ""}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    if (value === "__new__") {
+                      setIsCreatingCategory(true)
+                      return
+                    }
+                    onSetCategory(meetingId, value || null)
+                  }}
+                  className="rounded-control border border-hairline bg-canvas-raised px-3 py-1.5 font-mono text-[11px] text-ink-dim hover:border-signal/40 focus:border-signal focus:outline-none"
+                >
+                  <option value="">Sin categoría</option>
+                  {categories.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                  <option value="__new__">+ Nueva categoría…</option>
+                </select>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {state.saveError && (
+        <div className="flex items-start gap-2 rounded-control border border-rec/30 bg-rec-dim px-4 py-3 text-sm text-ink">
+          <AlertCircle className="mt-0.5 size-4 shrink-0 text-rec" />
+          <div className="flex-1 space-y-2">
+            <p>
+              El resultado se calculó correctamente pero no se pudo guardar: {state.saveError}
+            </p>
+            {meetingId && (
+              <Button size="sm" variant="subtle" onClick={() => retrySave(meetingId)}>
+                Reintentar guardado
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+
       <Panel raised>
         <PanelHeader
           eyebrow="Pipeline"
@@ -95,9 +216,27 @@ export function PipelineOrchestrator({ audioPath, meetingId }: { audioPath?: str
             </div>
           )}
 
-          {state.step === "idle" && (
-            <Button leftIcon={<Play className="size-4" />} onClick={() => runPipeline(audioPath, meetingId)}>
+          {state.step === "idle" && !state.transcript && (
+            <Button
+              leftIcon={<Play className="size-4" />}
+              onClick={() =>
+                runPipeline(audioPath, meetingId, undefined, undefined, expectedSpeakers, meetingTitle)
+              }
+            >
               Ejecutar pipeline
+            </Button>
+          )}
+
+          {/* La transcripción ya está guardada (un guardado previo se quedó a
+              medias) — solo falta el resumen, así que no hace falta
+              re-diarizar ni re-transcribir el audio. */}
+          {state.step === "idle" && state.transcript && meetingId && (
+            <Button
+              leftIcon={<Sparkles className="size-4" />}
+              disabled={regenerating}
+              onClick={() => regenerateSummary(meetingId)}
+            >
+              {regenerating ? "Generando resumen…" : "Generar resumen"}
             </Button>
           )}
 
@@ -131,6 +270,20 @@ export function PipelineOrchestrator({ audioPath, meetingId }: { audioPath?: str
         </motion.div>
       )}
 
+      {state.utterances && state.utterances.length > 0 && (
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+          <Panel>
+            <PanelHeader
+              eyebrow="Transcripción"
+              title={`Por hablante · ${new Set(state.utterances.map((u) => u.speaker)).size} hablante(s)`}
+            />
+            <PanelBody>
+              <SpeakerTranscript utterances={state.utterances} />
+            </PanelBody>
+          </Panel>
+        </motion.div>
+      )}
+
       {state.transcript && (
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
           <Panel>
@@ -155,9 +308,23 @@ export function PipelineOrchestrator({ audioPath, meetingId }: { audioPath?: str
               }
             />
             <PanelBody>
-              <TextResultPanel text={state.summary} filename="resumen.md" markdown />
+              <SummaryPanel
+                summary={state.summary}
+                title={meetingTitle ?? "Resumen"}
+                regenerating={regenerating}
+                onSave={meetingId ? (text) => updateSummary(meetingId, text) : undefined}
+                onRegenerate={
+                  meetingId ? (instructions) => regenerateSummary(meetingId, instructions) : undefined
+                }
+              />
             </PanelBody>
           </Panel>
+        </motion.div>
+      )}
+
+      {state.transcript && (
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+          <MeetingChat meetingId={meetingId} />
         </motion.div>
       )}
     </div>

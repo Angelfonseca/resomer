@@ -14,6 +14,15 @@ pub enum ResomerError {
     #[error("Summarization error: {0}")]
     Summarization(String),
 
+    #[error("Chat error: {0}")]
+    Chat(String),
+
+    #[error("Embedding error: {0}")]
+    Embedding(String),
+
+    #[error("Rerank error: {0}")]
+    Rerank(String),
+
     #[error("Storage error: {0}")]
     Storage(String),
 
