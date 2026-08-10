@@ -24,3 +24,8 @@ recordings/
 
 # Logs
 *.log
+
+# Claude Code / agent tooling (skill caches, local settings)
+.claude/
+.agents/
+skills-lock.json
