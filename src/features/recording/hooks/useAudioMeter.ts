@@ -22,6 +22,9 @@ export function useAudioMeter(active: boolean) {
     }
 
     let cancelled = false
+    // Un fallo transitorio anterior no debe dejar el medidor en modo sintético
+    // para toda la sesión: cada activación reintenta el micrófono real.
+    setErrored(false)
 
     async function start() {
       try {
@@ -32,7 +35,12 @@ export function useAudioMeter(active: boolean) {
         }
         streamRef.current = stream
 
-        const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext
+        const AudioContextCtor =
+          window.AudioContext ??
+          (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+        if (!AudioContextCtor) {
+          throw new Error("AudioContext no disponible en este WebView")
+        }
         const audioCtx = new AudioContextCtor()
         audioCtxRef.current = audioCtx
 

@@ -173,13 +173,16 @@ export function PipelineOrchestrator({
         </div>
       )}
 
-      {state.saveError && (
+      {(state.transcriptSaveError || state.summarySaveError) && (
         <div className="flex items-start gap-2 rounded-control border border-rec/30 bg-rec-dim px-4 py-3 text-sm text-ink">
           <AlertCircle className="mt-0.5 size-4 shrink-0 text-rec" />
           <div className="flex-1 space-y-2">
-            <p>
-              El resultado se calculó correctamente pero no se pudo guardar: {state.saveError}
-            </p>
+            {state.transcriptSaveError && (
+              <p>No se pudo guardar la transcripción: {state.transcriptSaveError}</p>
+            )}
+            {state.summarySaveError && (
+              <p>No se pudo guardar el resumen: {state.summarySaveError}</p>
+            )}
             {meetingId && (
               <Button size="sm" variant="subtle" onClick={() => retrySave(meetingId)}>
                 Reintentar guardado

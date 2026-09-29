@@ -17,25 +17,24 @@ pub fn list_input_devices() -> Result<Vec<AudioDevice>, ResomerError> {
 
     let mut devices = Vec::new();
 
+    // El dispositivo por defecto se compara por nombre: `default_input_device()`
+    // devuelve una instancia nueva, así que comparar punteros (lo anterior)
+    // nunca daba `true` y la UI no marcaba el dispositivo por defecto.
+    let default_name = host.default_input_device().map(|d| d.to_string());
+
     let input_devices = host
         .input_devices()
         .map_err(|e| ResomerError::RecordingError(format!("Failed to enumerate devices: {}", e)))?;
 
     for (device_index, device) in input_devices.enumerate() {
-        let is_default = host
-            .default_input_device()
-            .as_ref()
-            .map(|d| std::ptr::eq(d, &device))
-            .unwrap_or(false);
+        let name = device.to_string();
+        let is_default = default_name.as_deref() == Some(name.as_str());
 
         let channels = device
             .default_input_config()
             .ok()
             .map(|c| c.channels())
             .unwrap_or(0);
-
-        // Use generic names since cpal doesn't expose device names reliably
-        let name = format!("Device {}", device_index);
 
         // Collect common sample rates
         let sample_rates = vec![8000, 16000, 44100, 48000];

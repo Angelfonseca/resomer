@@ -23,6 +23,17 @@ impl Database {
         let conn = Connection::open(db_path)
             .map_err(|e| ResomerError::Storage(format!("Failed to open DB: {}", e)))?;
 
+        // Endurecer la conexión: sin `foreign_keys=ON` las cláusulas FOREIGN
+        // KEY del esquema son inertes (SQLite las ignora por defecto), WAL
+        // mejora la concurrencia lector/escritor, y el busy_timeout evita
+        // errores "database is locked" esporádicos.
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA journal_mode = WAL;
+             PRAGMA busy_timeout = 5000;",
+        )
+        .map_err(|e| ResomerError::Storage(format!("Failed to configure DB: {}", e)))?;
+
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
         };
@@ -436,7 +447,12 @@ impl Database {
         conn.execute(
             "INSERT INTO global_chat_messages (conversation_id, role, content, created_at)
              VALUES (?1, ?2, ?3, ?4)",
-            params![conversation_id, role, content, chrono::Utc::now().to_rfc3339()],
+            params![
+                conversation_id,
+                role,
+                content,
+                chrono::Utc::now().to_rfc3339()
+            ],
         )
         .map_err(|e| ResomerError::Storage(format!("Insert global chat message failed: {}", e)))?;
 
@@ -474,7 +490,9 @@ impl Database {
     pub fn list_conversations(&self) -> Result<Vec<Conversation>, ResomerError> {
         let conn = self.get_connection()?;
         let mut stmt = conn
-            .prepare("SELECT id, title, created_at FROM global_conversations ORDER BY created_at DESC")
+            .prepare(
+                "SELECT id, title, created_at FROM global_conversations ORDER BY created_at DESC",
+            )
             .map_err(|e| ResomerError::Storage(format!("Query failed: {}", e)))?;
 
         let convs = stmt
@@ -560,12 +578,13 @@ impl Database {
         category: Option<&str>,
     ) -> Result<(), ResomerError> {
         let conn = self.get_connection()?;
-        let affected = conn.execute(
-            "UPDATE meetings SET category = ?1, updated_at = ?2 WHERE id = ?3",
-            params![category, chrono::Utc::now().to_rfc3339(), meeting_id],
-        )
-        .map_err(|e| ResomerError::Storage(format!("Update meeting category failed: {}", e)))?;
-        
+        let affected = conn
+            .execute(
+                "UPDATE meetings SET category = ?1, updated_at = ?2 WHERE id = ?3",
+                params![category, chrono::Utc::now().to_rfc3339(), meeting_id],
+            )
+            .map_err(|e| ResomerError::Storage(format!("Update meeting category failed: {}", e)))?;
+
         if affected == 0 {
             // El ID probablemente no existe en BD todavía (ej. "local-12345")
             // No lo consideramos un error fatal, el frontend usa actualización optimista

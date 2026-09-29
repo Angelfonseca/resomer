@@ -3,22 +3,8 @@ import { Check, Copy, Download } from "lucide-react"
 import { Button } from "../../../components/ui/Button"
 import { formatTimecode } from "../../../components/ui/Timecode"
 import { downloadTextFile } from "../../../lib/download"
+import { CHANNEL_COLORS, speakerLabel } from "../speakerColors"
 import type { SpeakerUtterance } from "../types"
-
-// Mismo orden/paleta que SpeakerTimeline, para que un mismo hablante tenga el
-// mismo color en la línea de tiempo y en la transcripción atribuida.
-const CHANNEL_COLORS = [
-  "var(--color-channel-1)",
-  "var(--color-channel-2)",
-  "var(--color-channel-3)",
-  "var(--color-channel-4)",
-]
-
-/** "Speaker-0" → "Hablante 1"; cualquier otra etiqueta se muestra tal cual. */
-function speakerLabel(speaker: string): string {
-  const m = speaker.match(/^Speaker-(\d+)$/)
-  return m ? `Hablante ${Number(m[1]) + 1}` : speaker
-}
 
 export function SpeakerTranscript({ utterances }: { utterances: SpeakerUtterance[] }) {
   const [copied, setCopied] = useState(false)

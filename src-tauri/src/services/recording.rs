@@ -130,11 +130,19 @@ impl crate::domain::AudioRecorder for CpalAudioRecorder {
         }
 
         let stream = Self::get_recording_stream(output_path, self.is_recording.clone())?;
-        stream
-            .play()
-            .map_err(|e| ResomerError::RecordingError(format!("Stream play failed: {}", e)))?;
 
+        // Marcar como grabando ANTES de reproducir el stream: el primer
+        // callback puede dispararse en cuanto `play()` arranca, y si la bandera
+        // aún es false se perderían las primeras muestras de cada grabación.
         self.is_recording.store(true, Ordering::Relaxed);
+        if let Err(e) = stream.play() {
+            self.is_recording.store(false, Ordering::Relaxed);
+            return Err(ResomerError::RecordingError(format!(
+                "Stream play failed: {}",
+                e
+            )));
+        }
+
         *self.stream.lock().await = Some(stream);
 
         Ok(())

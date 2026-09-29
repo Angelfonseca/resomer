@@ -9,10 +9,7 @@ interface ApiKeySettingsProps {
   onKeyChange?: () => void
 }
 
-function maskKey(key: string): string {
-  if (key.length <= 6) return "•".repeat(key.length)
-  return `${key.slice(0, 3)}${"•".repeat(Math.max(3, key.length - 6))}${key.slice(-3)}`
-}
+
 
 export function ApiKeySettings({ onKeyChange }: ApiKeySettingsProps) {
   const [apiKey, setApiKey] = useState("")
@@ -24,10 +21,13 @@ export function ApiKeySettings({ onKeyChange }: ApiKeySettingsProps) {
 
   const loadApiKey = async () => {
     try {
-      const key = await invoke<string | null>("get_api_key")
-      setMaskedKey(key ? maskKey(key) : "")
+      // El backend nunca expone la clave en claro, solo su estado enmascarado.
+      const status = await invoke<{ configured: boolean; masked: string | null }>(
+        "get_api_key_status"
+      )
+      setMaskedKey(status.masked ?? "")
     } catch (err) {
-      setResult({ tone: "error", message: `No se pudo leer la clave: ${err}` })
+      setResult({ tone: "error", message: `No se pudo leer el estado de la clave: ${err}` })
     }
   }
 
@@ -44,7 +44,7 @@ export function ApiKeySettings({ onKeyChange }: ApiKeySettingsProps) {
     setResult(null)
     try {
       await invoke("save_api_key", { apiKey })
-      setMaskedKey(maskKey(apiKey))
+      await loadApiKey()
       setApiKey("")
       setResult({ tone: "success", message: "Clave guardada en el llavero del sistema." })
       onKeyChange?.()
@@ -59,14 +59,9 @@ export function ApiKeySettings({ onKeyChange }: ApiKeySettingsProps) {
     setTesting(true)
     setResult(null)
     try {
-      const keyToTest = apiKey || (await invoke<string | null>("get_api_key")) || ""
-      if (!keyToTest) {
-        setResult({ tone: "error", message: "No hay ninguna clave configurada para probar." })
-        return
-      }
-      const response = await invoke<{ success: boolean; message: string }>("test_connection", {
-        apiKey: keyToTest,
-      })
+      // La prueba usa la clave guardada y el endpoint configurado en el
+      // backend; el frontend no envía ninguno de los dos.
+      const response = await invoke<{ success: boolean; message: string }>("test_connection")
       setResult({ tone: response.success ? "success" : "error", message: response.message })
     } catch (err) {
       setResult({ tone: "error", message: `Prueba fallida: ${err}` })

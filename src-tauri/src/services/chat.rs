@@ -38,7 +38,7 @@ impl MeetingChatAssistant {
             api_endpoint,
             api_key,
             model,
-            client: reqwest::Client::new(),
+            client: crate::infra::http_client::build_client(),
         }
     }
 
@@ -147,7 +147,7 @@ impl GlobalAssistant {
             api_endpoint,
             api_key,
             model,
-            client: reqwest::Client::new(),
+            client: crate::infra::http_client::build_client(),
         }
     }
 

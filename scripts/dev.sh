@@ -8,14 +8,14 @@ pkill -f "tauri dev" || true
 sleep 1
 
 # Lanzar en background
-npm run tauri dev &
+pnpm run tauri dev &
 DEV_PID=$!
 
-# Esperar 10s a que levante Vite en puerto 5173
-echo "[i] Esperando que Vite levante en :5173..."
+# Esperar a que levante Vite en el puerto configurado en vite.config.ts (1420)
+echo "[i] Esperando que Vite levante en :1420..."
 for i in {1..30}; do
-  if nc -z 127.0.0.1 5173 2>/dev/null; then
-    echo "[✓] App lista en :5173"
+  if nc -z 127.0.0.1 1420 2>/dev/null; then
+    echo "[✓] App lista en :1420"
     break
   fi
   if [ $i -eq 30 ]; then

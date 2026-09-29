@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 
 export interface Meeting {
@@ -15,11 +15,17 @@ export function useMeetings() {
   const [meetings, setMeetings] = useState<Meeting[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+  // Espejo sincrónico de la lista para leer el valor previo dentro de
+  // callbacks sin depender de `meetings` (evita recrear los callbacks en cada
+  // cambio y snapshots obsoletos al revertir actualizaciones optimistas).
+  const meetingsRef = useRef(meetings)
+  meetingsRef.current = meetings
 
   const refreshMeetings = useCallback(async () => {
     try {
       const result = await invoke<Meeting[]>("list_meetings")
       setMeetings(result)
+      setError("")
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setError(message)
@@ -53,11 +59,11 @@ export function useMeetings() {
   )
 
   const setMeetingCategory = useCallback(async (id: string, category: string | null) => {
-    const previous = meetings
+    const previousCategory = meetingsRef.current.find((m) => m.id === id)?.category ?? null
     // Actualización optimista, igual que el borrado: se refleja de inmediato
     // y se revierte si el backend falla.
     setMeetings((prev) => prev.map((m) => (m.id === id ? { ...m, category } : m)))
-    
+
     // Si es un ID temporal ("local-..."), no intentamos guardar en el backend todavía
     if (id.startsWith("local-")) {
       return
@@ -69,27 +75,28 @@ export function useMeetings() {
       // si la categoría era "Nueva categoría..." y necesita propagarse
       await refreshMeetings()
     } catch (err) {
-      setMeetings(previous)
-      const message = err instanceof Error ? err.message : String(err)
-      setError(message)
-      throw err
+      setMeetings((prev) =>
+        prev.map((m) => (m.id === id ? { ...m, category: previousCategory } : m))
+      )
+      setError(err instanceof Error ? err.message : String(err))
     }
-  }, [meetings, refreshMeetings])
+  }, [refreshMeetings])
 
-  const deleteMeeting = useCallback(async (id: string) => {
-    const previous = meetings
-    // Actualización optimista: la quitamos de la lista de inmediato.
-    setMeetings((prev) => prev.filter((m) => m.id !== id))
-    try {
-      await invoke("delete_meeting", { meetingId: id })
-    } catch (err) {
-      // Si falla, restauramos la lista y propagamos el error.
-      setMeetings(previous)
-      const message = err instanceof Error ? err.message : String(err)
-      setError(message)
-      throw err
-    }
-  }, [meetings])
+  const deleteMeeting = useCallback(
+    async (id: string) => {
+      // Actualización optimista: la quitamos de la lista de inmediato. Si el
+      // backend falla, resincronizamos desde él (fuente de verdad) en vez de
+      // restaurar un snapshot que puede haber quedado obsoleto.
+      setMeetings((prev) => prev.filter((m) => m.id !== id))
+      try {
+        await invoke("delete_meeting", { meetingId: id })
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+        await refreshMeetings()
+      }
+    },
+    [refreshMeetings]
+  )
 
   return {
     meetings,

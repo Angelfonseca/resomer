@@ -34,7 +34,7 @@ impl RerankClient {
         Self {
             api_endpoint,
             api_key,
-            client: reqwest::Client::new(),
+            client: crate::infra::http_client::build_client(),
         }
     }
 

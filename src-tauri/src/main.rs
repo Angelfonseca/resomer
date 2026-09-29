@@ -5,11 +5,12 @@ use resomer_backend::services::{
     ChatMessage, Conversation, TranscriptSegment, TranscriptionOutput,
 };
 use resomer_backend::{
-    ask_global_question as lib_ask_global_question, ask_meeting_question as lib_ask_meeting_question,
-    attribute_speakers_to_transcript as lib_attribute_speakers, create_meeting as lib_create_meeting,
-    delete_api_key as lib_delete_api_key, delete_meeting as lib_delete_meeting,
-    diarize_audio as lib_diarize_audio, get_api_key as lib_get_api_key,
-    get_chat_history as lib_get_chat_history,
+    ask_global_question as lib_ask_global_question,
+    ask_meeting_question as lib_ask_meeting_question,
+    attribute_speakers_to_transcript as lib_attribute_speakers,
+    create_meeting as lib_create_meeting, delete_api_key as lib_delete_api_key,
+    delete_meeting as lib_delete_meeting, diarize_audio as lib_diarize_audio,
+    get_api_key_status as lib_get_api_key_status, get_chat_history as lib_get_chat_history,
     get_global_chat_history as lib_get_global_chat_history,
     get_meeting_data as lib_get_meeting_data, list_audio_devices as lib_list_audio_devices,
     list_meetings as lib_list_meetings, mark_meeting_error as lib_mark_meeting_error,
@@ -18,7 +19,7 @@ use resomer_backend::{
     set_expected_speakers as lib_set_expected_speakers, start_recording as lib_start_recording,
     stop_recording as lib_stop_recording, summarize_text as lib_summarize_text,
     test_connection as lib_test_connection, transcribe_audio as lib_transcribe_audio,
-    ActiveRecording, GlobalAnswer, MeetingData, TestConnectionResponse,
+    ActiveRecording, ApiKeyStatus, GlobalAnswer, MeetingData, TestConnectionResponse,
 };
 use resomer_backend::{
     create_global_conversation as lib_create_global_conversation,
@@ -36,8 +37,8 @@ fn save_api_key(api_key: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_api_key() -> Result<Option<String>, String> {
-    lib_get_api_key()
+fn get_api_key_status() -> Result<ApiKeyStatus, String> {
+    lib_get_api_key_status()
 }
 
 #[tauri::command]
@@ -46,8 +47,8 @@ fn delete_api_key() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn test_connection(api_key: String) -> Result<TestConnectionResponse, String> {
-    lib_test_connection(api_key).await
+async fn test_connection() -> Result<TestConnectionResponse, String> {
+    lib_test_connection().await
 }
 
 #[tauri::command]
@@ -111,10 +112,9 @@ async fn diarize_audio(
 #[tauri::command]
 async fn transcribe_audio(
     audio_path: String,
-    api_endpoint: String,
     model: String,
 ) -> Result<TranscriptionOutput, String> {
-    lib_transcribe_audio(audio_path, api_endpoint, model).await
+    lib_transcribe_audio(audio_path, model).await
 }
 
 /// Cruza diarización + transcripción con marcas de tiempo → "quién dijo qué".
@@ -129,11 +129,10 @@ fn attribute_speakers(
 #[tauri::command]
 async fn summarize_text(
     text: String,
-    api_endpoint: String,
     model: String,
     instructions: Option<String>,
 ) -> Result<String, String> {
-    lib_summarize_text(text, api_endpoint, model, instructions).await
+    lib_summarize_text(text, model, instructions).await
 }
 
 #[tauri::command]
@@ -183,10 +182,9 @@ async fn get_chat_history(meeting_id: String) -> Result<Vec<ChatMessage>, String
 async fn ask_meeting_question(
     meeting_id: String,
     question: String,
-    api_endpoint: String,
     model: String,
 ) -> Result<String, String> {
-    lib_ask_meeting_question(meeting_id, question, api_endpoint, model).await
+    lib_ask_meeting_question(meeting_id, question, model).await
 }
 
 #[tauri::command]
@@ -198,10 +196,9 @@ async fn get_global_chat_history(conversation_id: String) -> Result<Vec<ChatMess
 async fn ask_global_question(
     conversation_id: String,
     question: String,
-    api_endpoint: String,
     model: String,
 ) -> Result<GlobalAnswer, String> {
-    lib_ask_global_question(conversation_id, question, api_endpoint, model).await
+    lib_ask_global_question(conversation_id, question, model).await
 }
 
 #[tauri::command]
@@ -235,17 +232,16 @@ async fn update_meeting_title(meeting_id: String, title: String) -> Result<(), S
 }
 
 #[tauri::command]
-async fn update_meeting_category(meeting_id: String, category: Option<String>) -> Result<(), String> {
+async fn update_meeting_category(
+    meeting_id: String,
+    category: Option<String>,
+) -> Result<(), String> {
     lib_update_meeting_category(meeting_id, category).await
 }
 
 #[tauri::command]
-async fn generate_meeting_title(
-    meeting_id: String,
-    api_endpoint: String,
-    model: String,
-) -> Result<String, String> {
-    lib_generate_meeting_title(meeting_id, api_endpoint, model).await
+async fn generate_meeting_title(meeting_id: String, model: String) -> Result<String, String> {
+    lib_generate_meeting_title(meeting_id, model).await
 }
 
 /// Cuántos caracteres de historial muestra el mini-medidor de texto del tray.
@@ -277,7 +273,12 @@ struct TrayMeterState {
     // nativo) en vez de reconstruir y reemplazar el `Menu` completo en cada
     // tick: reemplazar el menú mientras el usuario lo tiene abierto (click
     // en el ícono) hace que macOS lo cierre de golpe o crashee el proceso.
-    items: std::sync::Mutex<Option<(tauri::menu::MenuItem<tauri::Wry>, tauri::menu::MenuItem<tauri::Wry>)>>,
+    items: std::sync::Mutex<
+        Option<(
+            tauri::menu::MenuItem<tauri::Wry>,
+            tauri::menu::MenuItem<tauri::Wry>,
+        )>,
+    >,
 }
 
 impl Default for TrayMeterState {
@@ -309,7 +310,10 @@ impl TrayMeterState {
             }
             d.iter().collect::<String>()
         };
-        (push_one(&self.sys, levels.system), push_one(&self.mic, levels.mic))
+        (
+            push_one(&self.sys, levels.system),
+            push_one(&self.mic, levels.mic),
+        )
     }
 }
 
@@ -452,7 +456,12 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         if !state.active.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
-        if state.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 4 != 0 {
+        if state
+            .counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % 4
+            != 0
+        {
             return;
         }
         let Ok(levels) =
@@ -569,9 +578,10 @@ fn update_tray_recording(
     use tauri::Manager;
 
     let meter_state = app.state::<TrayMeterState>();
-    meter_state
-        .active
-        .store(recording && show_meter, std::sync::atomic::Ordering::Relaxed);
+    meter_state.active.store(
+        recording && show_meter,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     if recording && show_meter {
         meter_state.reset();
     }
@@ -607,11 +617,25 @@ fn update_tray_recording(
     .map_err(|e| e.to_string())
 }
 
+/// Inicializa logging estructurado. El nivel se controla con `RUST_LOG`
+/// (por defecto `info`). Nunca se registran claves ni cabeceras Authorization.
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+}
+
 fn main() {
+    init_tracing();
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             build_tray(app)?;
+            // Una reunión que quedó "grabando" de una sesión anterior (cierre o
+            // crash a mitad de grabación) se marca como error al arrancar.
+            tauri::async_runtime::spawn(async {
+                resomer_backend::reconcile_interrupted_recordings().await;
+            });
             Ok(())
         })
         // Cerrar la ventana la oculta en vez de terminar la app, para que el
@@ -627,7 +651,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             save_api_key,
-            get_api_key,
+            get_api_key_status,
             delete_api_key,
             test_connection,
             create_meeting,
@@ -659,6 +683,18 @@ fn main() {
             generate_meeting_title,
             get_active_recording,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            // Al salir de verdad (no al ocultar la ventana), detener cualquier
+            // grabación en curso y matar el helper de audio del sistema. Sin
+            // esto, el helper quedaba vivo capturando audio y sin finalizar el
+            // WAV, y la app no podía reabrirse con una grabación fantasma.
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                resomer_backend::shutdown_recording();
+            }
+        });
 }

@@ -1,13 +1,7 @@
 import { useMemo } from "react"
 import { formatTimecode } from "../../../components/ui/Timecode"
+import { CHANNEL_COLORS, speakerLabel } from "../speakerColors"
 import type { Segment } from "../types"
-
-const CHANNEL_COLORS = [
-  "var(--color-channel-1)",
-  "var(--color-channel-2)",
-  "var(--color-channel-3)",
-  "var(--color-channel-4)",
-]
 
 export function SpeakerTimeline({ segments }: { segments: Segment[] }) {
   const { lanes, totalDuration } = useMemo(() => {
@@ -40,7 +34,9 @@ export function SpeakerTimeline({ segments }: { segments: Segment[] }) {
                 className="size-2 shrink-0 rounded-full"
                 style={{ backgroundColor: lane.color }}
               />
-              <span className="truncate text-xs font-medium text-ink-dim">{lane.speaker}</span>
+              <span className="truncate text-xs font-medium text-ink-dim">
+                {speakerLabel(lane.speaker)}
+              </span>
             </div>
             <div className="relative h-6 flex-1 overflow-hidden rounded-md bg-canvas-raised">
               {lane.segments.map((seg, i) => (

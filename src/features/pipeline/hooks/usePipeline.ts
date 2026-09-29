@@ -3,12 +3,9 @@ import { invoke } from "@tauri-apps/api/core"
 import { notifyPipelineResult } from "../../../lib/notify"
 import type { Segment, SpeakerUtterance, TranscriptionOutput } from "../types"
 
-// Mirrors the default in src-tauri/src/infra/config.rs (ConfigManager).
-// There is no frontend command yet to read the configured base URL, so we
-// keep this in sync manually until that's wired up.
-const API_BASE_URL = "https://api.nan.builders/v1"
-const TRANSCRIPTION_ENDPOINT = `${API_BASE_URL}/audio/transcriptions`
-const CHAT_ENDPOINT = `${API_BASE_URL}/chat/completions`
+// Los endpoints del gateway los resuelve el backend desde su config; el
+// frontend ya no los envía (antes los hardcodeaba aquí, permitiendo filtrar la
+// API key a un host arbitrario desde una webview comprometida).
 
 export type PipelineStep =
   | "idle"
@@ -27,10 +24,13 @@ export interface PipelineState {
   summary?: string
   progress: number
   error?: string
-  // Un guardado (transcripción o resumen) falló pero el resultado ya
-  // computado sigue disponible en memoria — distinto de `error`, que es un
-  // fallo del propio procesamiento (diarización/transcripción/resumen).
-  saveError?: string
+  // Un guardado falló pero el resultado ya computado sigue disponible en
+  // memoria — distinto de `error`, que es un fallo del propio procesamiento
+  // (diarización/transcripción/resumen). Se llevan por separado: antes un
+  // guardado de resumen exitoso borraba el error de un guardado de
+  // transcripción fallido, y la transcripción se perdía en silencio.
+  transcriptSaveError?: string
+  summarySaveError?: string
 }
 
 interface MeetingData {
@@ -115,7 +115,6 @@ export const usePipeline = (onMeetingUpdated?: () => void) => {
         setState((prev) => ({ ...prev, step: "transcribing", progress: 50 }))
         const transcription = await invoke<TranscriptionOutput>("transcribe_audio", {
           audioPath,
-          apiEndpoint: TRANSCRIPTION_ENDPOINT,
           model: transcriptionModel,
         })
         const transcript = transcription.text
@@ -137,14 +136,13 @@ export const usePipeline = (onMeetingUpdated?: () => void) => {
             await invoke("save_transcript_results", { meetingId, segments, utterances, transcript })
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
-            setState((prev) => ({ ...prev, saveError: message }))
+            setState((prev) => ({ ...prev, transcriptSaveError: message }))
           }
         }
 
         setState((prev) => ({ ...prev, step: "summarizing", progress: 85 }))
         const summary = await invoke<string>("summarize_text", {
           text: transcript,
-          apiEndpoint: CHAT_ENDPOINT,
           model: apiModel,
         })
 
@@ -153,13 +151,12 @@ export const usePipeline = (onMeetingUpdated?: () => void) => {
         if (meetingId) {
           try {
             await invoke("update_summary", { meetingId, summary })
-            setState((prev) => ({ ...prev, saveError: undefined }))
+            setState((prev) => ({ ...prev, summarySaveError: undefined }))
             // La IA titula la reunión a partir del resumen. No bloqueante: si
             // falla, la reunión conserva su título "Reunión N".
             try {
               await invoke("generate_meeting_title", {
                 meetingId,
-                apiEndpoint: CHAT_ENDPOINT,
                 model: apiModel,
               })
             } catch {
@@ -168,7 +165,7 @@ export const usePipeline = (onMeetingUpdated?: () => void) => {
             onMeetingUpdated?.()
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
-            setState((prev) => ({ ...prev, saveError: message }))
+            setState((prev) => ({ ...prev, summarySaveError: message }))
           }
         }
 
@@ -202,24 +199,32 @@ export const usePipeline = (onMeetingUpdated?: () => void) => {
   const retrySave = useCallback(
     async (meetingId: string) => {
       const { segments, utterances, transcript, summary } = stateRef.current
-      try {
-        if (transcript) {
+      const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
+
+      // Reintenta cada guardado por separado para que el éxito de uno no
+      // oculte el fallo pendiente del otro.
+      if (transcript) {
+        try {
           await invoke("save_transcript_results", {
             meetingId,
             segments: segments ?? [],
             utterances: utterances ?? [],
             transcript,
           })
+          setState((prev) => ({ ...prev, transcriptSaveError: undefined }))
+        } catch (err) {
+          setState((prev) => ({ ...prev, transcriptSaveError: message(err) }))
         }
-        if (summary) {
-          await invoke("update_summary", { meetingId, summary })
-        }
-        setState((prev) => ({ ...prev, saveError: undefined }))
-        onMeetingUpdated?.()
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        setState((prev) => ({ ...prev, saveError: message }))
       }
+      if (summary) {
+        try {
+          await invoke("update_summary", { meetingId, summary })
+          setState((prev) => ({ ...prev, summarySaveError: undefined }))
+        } catch (err) {
+          setState((prev) => ({ ...prev, summarySaveError: message(err) }))
+        }
+      }
+      onMeetingUpdated?.()
     },
     [onMeetingUpdated]
   )
@@ -244,22 +249,31 @@ export const usePipeline = (onMeetingUpdated?: () => void) => {
       try {
         const summary = await invoke<string>("summarize_text", {
           text: transcript,
-          apiEndpoint: CHAT_ENDPOINT,
           model,
           instructions: instructions?.trim() || undefined,
         })
         await invoke("update_summary", { meetingId, summary })
-        setState((prev) => ({ ...prev, summary, step: "complete", progress: 100, saveError: undefined }))
+        setState((prev) => ({
+          ...prev,
+          summary,
+          step: "complete",
+          progress: 100,
+          summarySaveError: undefined,
+        }))
         try {
           await invoke("generate_meeting_title", {
             meetingId,
-            apiEndpoint: CHAT_ENDPOINT,
             model,
           })
           onMeetingUpdated?.()
         } catch {
           /* título opcional */
         }
+      } catch (err) {
+        // Sin este catch, un fallo al regenerar quedaba como promesa
+        // rechazada sin manejar y el usuario no veía nada.
+        const msg = err instanceof Error ? err.message : String(err)
+        setState((prev) => ({ ...prev, summarySaveError: msg }))
       } finally {
         setRegenerating(false)
       }

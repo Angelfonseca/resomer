@@ -44,6 +44,12 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Descargar modelos ONNX
+        run: ./scripts/setup-models.sh
+
+      # Falla si Cargo.lock está desactualizado, en vez de reescribirlo en CI.
+      - run: cargo fetch --locked
+
       - name: Build DMG
         run: pnpm tauri build --target ${{ matrix.target }} --bundles dmg
         env:

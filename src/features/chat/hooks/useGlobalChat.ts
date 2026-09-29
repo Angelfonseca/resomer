@@ -1,10 +1,7 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { invoke } from "@tauri-apps/api/core"
 
-// Mismo gateway/endpoint que usePipeline.ts (ver ese archivo para la nota
-// sobre por qué está hardcodeado en vez de leerse de la config del backend).
-const API_BASE_URL = "https://api.nan.builders/v1"
-const CHAT_ENDPOINT = `${API_BASE_URL}/chat/completions`
+// El endpoint del gateway lo resuelve el backend desde su config.
 
 export interface GlobalSource {
   meeting_id: string
@@ -31,8 +28,14 @@ export function useGlobalChat(conversationId: string | undefined) {
   const [loadingHistory, setLoadingHistory] = useState(true)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Guarda contra respuestas obsoletas: si el usuario cambia de conversación
+  // mientras una pregunta está en vuelo, la respuesta de la conversación
+  // anterior no se inyecta en la nueva.
+  const activeConvRef = useRef(conversationId)
+  activeConvRef.current = conversationId
 
   useEffect(() => {
+    setError(null)
     if (!conversationId) {
       setMessages([])
       setLoadingHistory(false)
@@ -58,6 +61,7 @@ export function useGlobalChat(conversationId: string | undefined) {
   const ask = useCallback(
     async (question: string, model = "mimo-v2.5") => {
       if (!conversationId || !question.trim()) return
+      const requestedConv = conversationId
 
       setError(null)
       setSending(true)
@@ -73,9 +77,9 @@ export function useGlobalChat(conversationId: string | undefined) {
         const result = await invoke<GlobalAnswer>("ask_global_question", {
           conversationId,
           question,
-          apiEndpoint: CHAT_ENDPOINT,
           model,
         })
+        if (requestedConv !== activeConvRef.current) return
         setMessages((prev) => [
           ...prev,
           {
@@ -86,13 +90,14 @@ export function useGlobalChat(conversationId: string | undefined) {
           },
         ])
       } catch (err) {
+        if (requestedConv !== activeConvRef.current) return
         const message = err instanceof Error ? err.message : String(err)
         setError(message)
         // La pregunta optimista quedó sin respuesta: la quitamos para que el
         // usuario pueda reintentarla sin ver un mensaje "colgado".
         setMessages((prev) => prev.filter((m) => m !== userMessage))
       } finally {
-        setSending(false)
+        if (requestedConv === activeConvRef.current) setSending(false)
       }
     },
     [conversationId]

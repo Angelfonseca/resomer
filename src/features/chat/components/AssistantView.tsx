@@ -9,7 +9,7 @@ export function AssistantView({
 }: {
   onOpenMeetingById?: (meetingId: string) => void
 }) {
-  const { conversations, activeId, setActiveId, loading, create, rename, remove, syncTitles } =
+  const { conversations, activeId, setActiveId, loading, error, create, rename, remove, syncTitles } =
     useGlobalConversations()
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
@@ -100,9 +100,16 @@ export function AssistantView({
         </div>
       </aside>
 
-      {/* Chat activo */}
-      <div className="min-w-0 flex-1">
+      {/* Chat activo — key por conversación para que el estado del chat
+          (mensajes, envío en curso, error) no se mezcle al cambiar de chat. */}
+      <div className="min-w-0 flex-1 space-y-3">
+        {error && (
+          <div className="rounded-control border border-rec/30 bg-rec-dim px-4 py-3 text-sm text-ink">
+            {error}
+          </div>
+        )}
         <GlobalAssistant
+          key={activeId ?? "sin-conversacion"}
           conversationId={activeId ?? undefined}
           conversationTitle={active?.title}
           onOpenMeetingById={onOpenMeetingById}

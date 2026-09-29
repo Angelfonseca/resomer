@@ -50,7 +50,7 @@ impl EmbeddingClient {
         Self {
             api_endpoint,
             api_key,
-            client: reqwest::Client::new(),
+            client: crate::infra::http_client::build_client(),
         }
     }
 
@@ -97,12 +97,40 @@ impl EmbeddingClient {
                     .ok_or_else(|| ResomerError::Embedding("Missing embedding field".to_string()))?
                     .iter()
                     .map(|v| {
-                        v.as_f64()
-                            .map(|f| f as f32)
-                            .ok_or_else(|| ResomerError::Embedding("Non-numeric embedding value".to_string()))
+                        v.as_f64().map(|f| f as f32).ok_or_else(|| {
+                            ResomerError::Embedding("Non-numeric embedding value".to_string())
+                        })
                     })
                     .collect::<Result<Vec<f32>, ResomerError>>()
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_text_splits_on_word_boundaries() {
+        let chunks = chunk_text("uno dos tres cuatro cinco", 11);
+        assert_eq!(chunks, vec!["uno dos", "tres cuatro", "cinco"]);
+    }
+
+    #[test]
+    fn chunk_text_single_chunk_when_fits() {
+        assert_eq!(chunk_text("hola mundo", 100), vec!["hola mundo"]);
+    }
+
+    #[test]
+    fn chunk_text_empty_input() {
+        assert!(chunk_text("   ", 10).is_empty());
+    }
+
+    #[test]
+    fn cosine_similarity_identity_orthogonal_and_zero() {
+        assert!((cosine_similarity(&[1.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < 1e-6);
+        assert!(cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]).abs() < 1e-6);
+        assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 1.0]), 0.0);
     }
 }

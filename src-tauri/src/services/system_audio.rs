@@ -145,6 +145,31 @@ impl SystemAudioRecorder {
     }
 }
 
+/// Último recurso: si el grabador se destruye sin haber pasado por
+/// `stop_recording` (p. ej. la app se cierra), matamos el proceso hijo. Sin
+/// esto, `std::process::Child` no mata a su hijo al caer y el helper quedaba
+/// capturando audio de fondo con el WAV sin finalizar.
+impl Drop for SystemAudioRecorder {
+    fn drop(&mut self) {
+        let child = self.child.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(mut child) = child {
+            // SIGTERM para darle al helper la oportunidad de cerrar el WAV.
+            unsafe {
+                libc::kill(child.id() as i32, libc::SIGTERM);
+            }
+            for _ in 0..10 {
+                match child.try_wait() {
+                    Ok(Some(_)) => return,
+                    Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                    Err(_) => break,
+                }
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 #[async_trait]
 impl AudioRecorder for SystemAudioRecorder {
     async fn start_recording(&self, output_path: &str) -> Result<(), ResomerError> {
@@ -202,7 +227,7 @@ impl AudioRecorder for SystemAudioRecorder {
                     continue;
                 }
                 if let Some(rest) = line.strip_prefix("LVL ") {
-                    let mut parts = rest.trim().split_whitespace();
+                    let mut parts = rest.split_whitespace();
                     if let (Some(sys_str), Some(mic_str)) = (parts.next(), parts.next()) {
                         if let (Ok(system), Ok(mic)) =
                             (sys_str.parse::<f32>(), mic_str.parse::<f32>())
@@ -241,15 +266,21 @@ impl AudioRecorder for SystemAudioRecorder {
             )));
         }
 
-        *self.child.lock().unwrap() = Some(child);
+        *self.child.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
         Ok(())
     }
 
     async fn stop_recording(&self) -> Result<(), ResomerError> {
         self.stopping.store(true, Ordering::SeqCst);
-        let child = self.child.lock().unwrap().take();
+        let child = self.child.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(mut child) = child {
-            Self::terminate_gracefully(&mut child)?;
+            // La espera por el helper es bloqueante (~5s máx): fuera del
+            // runtime async para no atascar otros workers de Tokio.
+            tokio::task::spawn_blocking(move || Self::terminate_gracefully(&mut child))
+                .await
+                .map_err(|e| {
+                    ResomerError::RecordingError(format!("Error esperando al helper: {}", e))
+                })??;
         }
         Ok(())
     }
@@ -258,9 +289,13 @@ impl AudioRecorder for SystemAudioRecorder {
         // ScreenCaptureKit no expone pausa nativa; detenemos la captura.
         // (El flujo de la app trata pausa como detener temporalmente.)
         self.stopping.store(true, Ordering::SeqCst);
-        let child = self.child.lock().unwrap().take();
+        let child = self.child.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(mut child) = child {
-            Self::terminate_gracefully(&mut child)?;
+            tokio::task::spawn_blocking(move || Self::terminate_gracefully(&mut child))
+                .await
+                .map_err(|e| {
+                    ResomerError::RecordingError(format!("Error esperando al helper: {}", e))
+                })??;
         }
         Ok(())
     }

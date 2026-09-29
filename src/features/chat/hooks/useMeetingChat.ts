@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useState } from "react"
 import { invoke } from "@tauri-apps/api/core"
 
-// Mismo gateway/endpoint que usePipeline.ts (ver ese archivo para la nota
-// sobre por qué está hardcodeado en vez de leerse de la config del backend).
-const API_BASE_URL = "https://api.nan.builders/v1"
-const CHAT_ENDPOINT = `${API_BASE_URL}/chat/completions`
+// El endpoint del gateway lo resuelve el backend desde su config; el frontend
+// ya no lo envía.
 
 export interface ChatMessage {
   role: "user" | "assistant"
@@ -60,7 +58,6 @@ export function useMeetingChat(meetingId: string | undefined) {
         const answer = await invoke<string>("ask_meeting_question", {
           meetingId,
           question,
-          apiEndpoint: CHAT_ENDPOINT,
           model,
         })
         setMessages((prev) => [

@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 echo "[i] Corriendo checks..."
 
@@ -15,18 +15,33 @@ cargo clippy -p resomer-backend -- -D warnings || {
   exit 1
 }
 
+echo "[i] Tests Rust..."
+cargo test -p resomer-backend || {
+  echo "[!] los tests de Rust fallaron"
+  exit 1
+}
+
 echo "[i] Build Rust..."
-cargo build -p resomer-backend --release 2>&1 | tail -20
+cargo build -p resomer-backend --release || {
+  echo "[!] el build de Rust falló"
+  exit 1
+}
 
 echo "[i] TypeScript check..."
-npm run type-check || {
+pnpm run type-check || {
   echo "[!] TypeScript tiene errores"
   exit 1
 }
 
 echo "[i] ESLint..."
-npm run lint || {
+pnpm run lint || {
   echo "[!] ESLint encontró problemas"
+  exit 1
+}
+
+echo "[i] Tests frontend (vitest)..."
+pnpm run test || {
+  echo "[!] los tests del frontend fallaron"
   exit 1
 }
 

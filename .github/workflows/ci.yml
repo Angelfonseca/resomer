@@ -1,0 +1,56 @@
+name: CI
+
+# Gate de calidad en cada push/PR: formato, clippy, tests Rust y chequeos del
+# frontend. A diferencia de los workflows de release, esto corre siempre para
+# que CI no pueda estar en verde con la app rota.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Formato Rust
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --locked -p resomer-backend -- -D warnings
+
+      - name: Tests Rust
+        run: cargo test --locked -p resomer-backend
+
+      - name: TypeScript
+        run: pnpm run type-check
+
+      - name: ESLint
+        run: pnpm run lint
+
+      - name: Tests frontend
+        run: pnpm run test

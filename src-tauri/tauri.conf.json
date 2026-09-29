@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "identifier": "com.resomer.app",
   "build": {
-    "beforeBuildCommand": "npm run build:frontend",
-    "beforeDevCommand": "npm run vite",
+    "beforeBuildCommand": "pnpm run build:frontend",
+    "beforeDevCommand": "pnpm run vite",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
@@ -19,13 +19,14 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420 http://localhost:1420; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'"
     }
   },
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
     "externalBin": ["binaries/resomer-audio-helper"],
+    "resources": ["models/*.onnx"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

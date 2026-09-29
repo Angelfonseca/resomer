@@ -103,10 +103,7 @@ mod tests {
 
     #[test]
     fn assigns_by_overlap_and_merges_consecutive() {
-        let diarization = vec![
-            seg(0.0, 5.0, "Speaker-0"),
-            seg(5.0, 10.0, "Speaker-1"),
-        ];
+        let diarization = vec![seg(0.0, 5.0, "Speaker-0"), seg(5.0, 10.0, "Speaker-1")];
         let transcript = vec![
             ts(0.0, 2.0, "Hola"),
             ts(2.0, 4.5, "qué tal"),

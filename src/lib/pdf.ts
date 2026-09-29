@@ -1,5 +1,3 @@
-import { jsPDF } from "jspdf"
-
 // Limpieza mínima de Markdown a texto legible: jsPDF no renderiza Markdown, y
 // para un export de resumen/chat basta con quitar la sintaxis y conservar la
 // estructura (encabezados en mayúsculas, viñetas con •).
@@ -17,10 +15,25 @@ function markdownToPlain(md: string): string {
 
 /**
  * Genera y descarga un PDF simple (texto fluido con saltos de página) a partir
- * de contenido Markdown o texto plano. Lazy a propósito: sin maquetación rica,
- * suficiente para exportar resúmenes y conversaciones.
+ * de contenido Markdown o texto plano. jsPDF se carga con `import()` dinámico:
+ * pesa ~900 KB y no debe entrar en el bundle principal, solo cuando el usuario
+ * exporta.
  */
 export function downloadPdf(filename: string, title: string, body: string, isMarkdown = true) {
+  void import("jspdf")
+    .then(({ jsPDF }) => buildAndSavePdf(jsPDF, filename, title, body, isMarkdown))
+    .catch((err) => {
+      console.error("No se pudo exportar el PDF:", err)
+    })
+}
+
+function buildAndSavePdf(
+  jsPDF: typeof import("jspdf").jsPDF,
+  filename: string,
+  title: string,
+  body: string,
+  isMarkdown: boolean
+) {
   const doc = new jsPDF({ unit: "pt", format: "a4" })
   const margin = 48
   const pageWidth = doc.internal.pageSize.getWidth()

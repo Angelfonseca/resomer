@@ -161,10 +161,11 @@ gateway — se guarda cifrada en el Keychain de macOS.
 | `pnpm tauri dev` | Levanta la app en modo desarrollo (hot reload). |
 | `pnpm build` | Build de producción del frontend + bundle nativo (`tauri build`). |
 | `pnpm type-check` | Chequeo de tipos TypeScript sin emitir. |
-| `pnpm lint` | ESLint sobre `src/`. |
+| `pnpm lint` | ESLint (flat config) sobre `src/`. |
+| `pnpm test` | Tests del frontend con Vitest. |
 | `pnpm format` | Formatea `src/` con Prettier. |
 | `./scripts/setup-models.sh` | Descarga los modelos ONNX de diarización. |
-| `./scripts/check.sh` | Corre `cargo fmt`, `clippy`, build Rust, `type-check` y `lint` — el gate previo a commitear. |
+| `./scripts/check.sh` | Corre `cargo fmt`, `clippy`, tests Rust, build, `type-check`, `lint` y tests frontend — el gate previo a commitear. |
 | `./scripts/dev.sh` | Levanta la app, verifica que responde en Vite y la cierra (smoke test de arranque). |
 
 ## Configuración

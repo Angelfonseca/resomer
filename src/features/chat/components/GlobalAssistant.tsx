@@ -34,12 +34,19 @@ export function GlobalAssistant({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
   }, [messages, sending])
 
+  // Único camino de envío: asegura que el título auto-generado se refresque
+  // (onAsked) tanto al escribir como al pulsar un prompt de ejemplo.
+  const send = async (question: string) => {
+    if (!question.trim() || sending) return
+    await ask(question)
+    onAsked?.()
+  }
+
   const handleSend = async () => {
     const question = input.trim()
     if (!question || sending) return
     setInput("")
-    await ask(question)
-    onAsked?.()
+    await send(question)
   }
 
   const handleExportPdf = () => {
@@ -86,6 +93,7 @@ export function GlobalAssistant({
       <PanelBody className="space-y-4">
         <div
           ref={scrollRef}
+          aria-live="polite"
           className="max-h-[26rem] min-h-[8rem] space-y-3 overflow-y-auto rounded-control border border-hairline bg-canvas-raised p-4"
         >
           {loadingHistory ? (
@@ -103,7 +111,7 @@ export function GlobalAssistant({
                 {EXAMPLE_PROMPTS.map((prompt) => (
                   <button
                     key={prompt}
-                    onClick={() => ask(prompt)}
+                    onClick={() => send(prompt)}
                     className="rounded-control border border-hairline-strong bg-panel-hi px-3 py-1.5 text-xs text-ink-dim transition-colors hover:border-signal/40 hover:text-ink"
                   >
                     {prompt}
@@ -178,6 +186,7 @@ export function GlobalAssistant({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            aria-label="Pregunta sobre tus reuniones"
             placeholder="Pregunta algo sobre cualquiera de tus reuniones…"
             rows={1}
             className="max-h-32 flex-1 resize-none rounded-control border border-hairline-strong bg-canvas-raised px-3 py-2.5 text-sm text-ink placeholder:text-ink-mute transition-colors focus:border-signal focus:outline-none focus:ring-1 focus:ring-signal/40"

@@ -13,6 +13,7 @@ import { useApiKeyStatus } from "./features/settings/hooks/useApiKeyStatus"
 import { useMeetings, type Meeting } from "./features/meetings/hooks/useMeetings"
 import { MeetingsView } from "./features/meetings/components/MeetingsView"
 import { AssistantView } from "./features/chat"
+import { DEFAULT_CATEGORIES } from "./lib/meetings"
 
 const VIEW_META: Record<View, { title: string; subtitle?: string }> = {
   studio: { title: "Studio", subtitle: "Tu espacio de trabajo de reuniones" },
@@ -26,9 +27,21 @@ const VIEW_META: Record<View, { title: string; subtitle?: string }> = {
 function App() {
   const [currentView, setCurrentView] = useState<View>("studio")
   const [lastRecordingPath, setLastRecordingPath] = useState<string | null>(null)
-  const { meetings, createMeeting, deleteMeeting, setMeetingCategory, refreshMeetings } = useMeetings()
+  const {
+    meetings,
+    createMeeting,
+    deleteMeeting,
+    setMeetingCategory,
+    refreshMeetings,
+    error: meetingsError,
+  } = useMeetings()
   const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null)
   const [expectedSpeakers, setExpectedSpeakers] = useState<number | null>(null)
+  // Id estable para el caso (raro) de grabar sin reunión creada todavía. Antes
+  // se generaba `local-${Date.now()}` en cada render, así que el id cambiaba
+  // constantemente y la grabación quedaba huérfana.
+  const [localMeetingId] = useState(() => `local-${Date.now()}`)
+  const [trayError, setTrayError] = useState<string | null>(null)
   // Fuente elegida en el menú del ícono de la barra de estado; preselecciona
   // el modo de grabación al abrir el panel.
   const [recordingSource, setRecordingSource] = useState<RecordingSource>("microphone")
@@ -45,7 +58,7 @@ function App() {
   const { hasKey, refresh: refreshApiKeyStatus } = useApiKeyStatus()
 
   const availableCategories = useMemo(() => {
-    const set = new Set(["Clientes", "Interno", "Personal"])
+    const set = new Set(DEFAULT_CATEGORIES)
     for (const m of meetings) if (m.category) set.add(m.category)
     return [...set].sort((a, b) => a.localeCompare(b))
   }, [meetings])
@@ -63,6 +76,10 @@ function App() {
       setExpectedSpeakers(null)
       setRecordingSource(source)
       setMirror(null) // grabación nueva desde la UI, no un reflejo del tray
+      // La grabación nueva aún no tiene pipeline: descarta el del audio
+      // anterior para que no se muestre (ni se reutilice por error) al
+      // procesar la nueva reunión.
+      setLastRecordingPath(null)
       try {
         const meeting = await createMeeting(label, category)
         setActiveMeetingId(meeting.id)
@@ -73,6 +90,21 @@ function App() {
       setCurrentView("recording")
     },
     [meetings.length, createMeeting]
+  )
+
+  // Navegación desde la barra lateral. Si se entra a "Grabar" sin una
+  // grabación en curso, se crea la reunión primero (igual que el botón "Nueva
+  // grabación"): así nunca se graba sobre una reunión existente ni con un id
+  // inventado en cada render.
+  const handleNavigate = useCallback(
+    (view: View) => {
+      if (view === "recording" && !mirror) {
+        void beginNewRecording()
+        return
+      }
+      setCurrentView(view)
+    },
+    [mirror, beginNewRecording]
   )
 
   // Abrir una reunión existente: muestra sus resultados guardados, o
@@ -112,6 +144,10 @@ function App() {
     const enterMirror = (a: ActiveRecording) => {
       setActiveMeetingId(a.meetingId)
       setExpectedSpeakers(null)
+      setTrayError(null)
+      // La reunión que se está grabando aún no tiene pipeline; descarta el del
+      // audio anterior para no mezclar su id con la ruta vieja.
+      setLastRecordingPath(null)
       setMirror({ meetingId: a.meetingId, filePath: a.audioPath, source: a.source })
       setCurrentView("recording")
     }
@@ -123,15 +159,20 @@ function App() {
     register(
       listen<ActiveRecording>("recording-stopped", (e) => {
         setMirror(null)
+        setTrayError(null)
         setActiveMeetingId(e.payload.meetingId)
         setLastRecordingPath(e.payload.audioPath)
         setCurrentView("pipeline")
+        refreshMeetings()
       })
     )
 
     register(
       listen<string>("recording-error", (e) => {
-        console.error("Grabación (barra de estado):", e.payload)
+        // Antes solo se escribía en consola y el usuario no veía nada cuando
+        // una grabación lanzada desde el tray fallaba (p. ej. permiso denegado
+        // o "ya hay una grabación en curso").
+        setTrayError(e.payload)
       })
     )
 
@@ -169,6 +210,7 @@ function App() {
         setActiveMeetingId(current.meetingId)
         setLastRecordingPath(current.filePath)
         setCurrentView("pipeline")
+        refreshMeetings()
       }
     }
 
@@ -194,14 +236,14 @@ function App() {
       document.removeEventListener("visibilitychange", onVisible)
       window.clearInterval(interval)
     }
-  }, [lastRecordingPath])
+  }, [lastRecordingPath, refreshMeetings])
 
   const meta = VIEW_META[currentView]
 
   return (
     <AppShell
       currentView={currentView}
-      onNavigate={setCurrentView}
+      onNavigate={handleNavigate}
       meetings={meetings}
       pipelineEnabled={Boolean(lastRecordingPath)}
       hasApiKey={hasKey}
@@ -220,6 +262,24 @@ function App() {
       />
 
       <main className="flex-1 overflow-y-auto px-8 py-8">
+        {trayError && (
+          <div className="mx-auto mb-6 flex w-full max-w-2xl items-start justify-between gap-3 rounded-control border border-rec/30 bg-rec-dim px-4 py-3 text-sm text-ink">
+            <span>{trayError}</span>
+            <button
+              onClick={() => setTrayError(null)}
+              className="shrink-0 font-mono text-[11px] uppercase tracking-wide text-ink-dim hover:text-ink"
+            >
+              Cerrar
+            </button>
+          </div>
+        )}
+
+        {meetingsError && (
+          <div className="mx-auto mb-6 w-full max-w-2xl rounded-control border border-rec/30 bg-rec-dim px-4 py-3 text-sm text-ink">
+            {meetingsError}
+          </div>
+        )}
+
         {currentView === "studio" && (
           <StudioView
             meetings={meetings}
@@ -233,7 +293,7 @@ function App() {
         {currentView === "recording" && (
           <div className="mx-auto w-full max-w-2xl">
             <RecordingPanel
-              meetingId={mirror?.meetingId ?? activeMeetingId ?? `local-${Date.now()}`}
+              meetingId={mirror?.meetingId ?? activeMeetingId ?? localMeetingId}
               initialSource={mirror?.source ?? recordingSource}
               attach={mirror}
               categories={availableCategories}
@@ -244,6 +304,9 @@ function App() {
                 setLastRecordingPath(filePath)
                 setExpectedSpeakers(speakers)
                 setCurrentView("pipeline")
+                // Reflejar el cambio de estado (grabando → procesando) en la
+                // barra lateral sin esperar a cambiar de vista.
+                refreshMeetings()
               }}
             />
           </div>
@@ -255,6 +318,7 @@ function App() {
         {lastRecordingPath && (
           <div className={currentView === "pipeline" ? "mx-auto w-full max-w-5xl" : "hidden"}>
             <PipelineOrchestrator
+              key={activeMeetingId ?? "sin-reunion"}
               audioPath={lastRecordingPath}
               meetingId={activeMeetingId ?? undefined}
               meetingTitle={meetings.find((m) => m.id === activeMeetingId)?.title}

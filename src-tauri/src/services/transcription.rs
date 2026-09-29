@@ -76,7 +76,11 @@ impl CloudTranscriber {
             api_endpoint,
             api_key,
             model,
-            client: reqwest::Client::new(),
+            // La transcripción es el paso más lento: timeout amplio, pero
+            // acotado para no quedarse colgado si el gateway no responde.
+            client: crate::infra::http_client::build_client_with_timeout(
+                std::time::Duration::from_secs(300),
+            ),
         }
     }
 
@@ -140,13 +144,19 @@ impl CloudTranscriber {
         }
 
         let mono = Self::to_mono_f32(&samples, spec.channels);
+        // Libera el buffer intercalado original (2 bytes/muestra) antes de
+        // resamplear: en reuniones largas son cientos de MB que no hacen falta
+        // solapados con las demás copias.
+        drop(samples);
 
         let resampled = if spec.sample_rate as i32 != WHISPER_SAMPLE_RATE {
             let resampler = LinearResampler::create(spec.sample_rate as i32, WHISPER_SAMPLE_RATE)
                 .ok_or_else(|| {
                 ResomerError::Transcription("No se pudo inicializar el resampler".to_string())
             })?;
-            resampler.resample(&mono, true)
+            let out = resampler.resample(&mono, true);
+            drop(mono);
+            out
         } else {
             mono
         };
@@ -369,6 +379,30 @@ impl CloudTranscriber {
 impl crate::domain::Transcriber for CloudTranscriber {
     async fn transcribe(&self, audio_path: &str) -> Result<String, ResomerError> {
         Ok(self.transcribe_full(audio_path).await?.text)
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn silence_detection_catches_only_flat_audio() {
+        assert!(CloudTranscriber::is_effectively_silent(&[]));
+        assert!(CloudTranscriber::is_effectively_silent(&[0, 0, 0, 0]));
+        // Amplitud audible → no es silencio.
+        assert!(!CloudTranscriber::is_effectively_silent(&[
+            1000, -1000, 500, -500
+        ]));
+    }
+
+    #[test]
+    fn to_mono_f32_averages_stereo_frames() {
+        // Dos frames estéreo: (1000, 3000) y (-1000, 1000) → medias 2000 y 0.
+        let mono = CloudTranscriber::to_mono_f32(&[1000, 3000, -1000, 1000], 2);
+        assert_eq!(mono.len(), 2);
+        assert!((mono[0] - 2000.0 / 32768.0).abs() < 1e-6);
+        assert!(mono[1].abs() < 1e-6);
     }
 }
 

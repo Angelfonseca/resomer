@@ -29,23 +29,53 @@ pub struct TestConnectionResponse {
     pub message: String,
 }
 
+/// Estado de la API key para la UI: nunca exponemos el secreto al webview, solo
+/// si está configurada y una versión enmascarada para mostrarla.
+#[derive(Serialize, Deserialize)]
+pub struct ApiKeyStatus {
+    pub configured: bool,
+    pub masked: Option<String>,
+}
+
+fn mask_api_key(key: &str) -> String {
+    if key.len() <= 6 {
+        return "•".repeat(key.len());
+    }
+    let bullets = "•".repeat((key.len() - 6).max(3));
+    format!("{}{}{}", &key[..3], bullets, &key[key.len() - 3..])
+}
+
 pub fn save_api_key(api_key: String) -> Result<(), String> {
     KeychainManager::save_api_key(&api_key).map_err(|e| e.to_string())
 }
 
-pub fn get_api_key() -> Result<Option<String>, String> {
-    KeychainManager::get_api_key().map_err(|e| e.to_string())
+/// Devuelve solo el estado (configurada + enmascarada). La clave en claro nunca
+/// cruza al frontend, así un script inyectado no puede leerla.
+pub fn get_api_key_status() -> Result<ApiKeyStatus, String> {
+    let key = KeychainManager::get_api_key().map_err(|e| e.to_string())?;
+    Ok(ApiKeyStatus {
+        configured: key.is_some(),
+        masked: key.as_deref().map(mask_api_key),
+    })
 }
 
 pub fn delete_api_key() -> Result<(), String> {
     KeychainManager::delete_api_key().map_err(|e| e.to_string())
 }
 
-pub async fn test_connection(api_key: String) -> Result<TestConnectionResponse, String> {
+/// Prueba la conexión con la clave guardada en el Keychain y el endpoint
+/// configurado en el backend. No acepta una clave ni un endpoint del frontend:
+/// así una webview comprometida no puede usar esta llamada para filtrar la
+/// clave a un host arbitrario.
+pub async fn test_connection() -> Result<TestConnectionResponse, String> {
+    let api_key = KeychainManager::get_api_key()
+        .map_err(|e| format!("Failed to get API key: {}", e))?
+        .ok_or_else(|| "No hay ninguna clave configurada para probar.".to_string())?;
+
     let config = ConfigManager::new();
     let endpoint = config.chat_endpoint();
 
-    let client = reqwest::Client::new();
+    let client = infra::http_client::build_client();
     let response = client
         .post(&endpoint)
         .header("Authorization", format!("Bearer {}", api_key))
@@ -78,39 +108,53 @@ pub async fn create_meeting(
 ) -> Result<Meeting, String> {
     let mut meeting = Meeting::new(title, expected_speakers);
     meeting.category = category;
-    
+
     let repo = get_database()?;
     repo.create(meeting).await.map_err(|e| e.to_string())
 }
 
-// Global recorder instance - initialized once per app
-type RecorderState = Arc<Mutex<Option<Arc<dyn AudioRecorder>>>>;
-pub static RECORDER: std::sync::OnceLock<RecorderState> = std::sync::OnceLock::new();
+/// La grabación en curso, si la hay. Agrupa en un único sitio el grabador y
+/// los metadatos de la reunión: antes eran dos `OnceLock`s independientes
+/// (`RECORDER` + `CURRENT_RECORDING`) con un check-then-set no atómico, lo que
+/// permitía dos grabaciones concurrentes y grabadores huérfanos. Un solo lock
+/// hace de fuente de verdad y serializa start/stop/pause.
+pub struct RecordingSession {
+    pub meeting_id: String,
+    pub audio_path: String,
+    pub source: String,
+    pub recorder: Arc<dyn AudioRecorder>,
+}
 
-/// Reunión (id, ruta del WAV) cuya grabación está activa ahora mismo, si la
-/// hay. Es la fuente de verdad del estado de grabación: permite que el ícono
-/// de la barra de estado detenga la grabación en curso sin depender del
-/// frontend (que macOS suspende cuando la ventana está oculta), y evita
-/// arrancar dos grabaciones a la vez.
-pub static CURRENT_RECORDING: std::sync::OnceLock<Mutex<Option<(String, String, String)>>> =
-    std::sync::OnceLock::new();
+static SESSION: std::sync::OnceLock<Mutex<Option<RecordingSession>>> = std::sync::OnceLock::new();
 
-fn current_recording_slot() -> &'static Mutex<Option<(String, String, String)>> {
-    CURRENT_RECORDING.get_or_init(|| Mutex::new(None))
+fn session_slot() -> &'static Mutex<Option<RecordingSession>> {
+    SESSION.get_or_init(|| Mutex::new(None))
 }
 
 /// Grabación activa (id, ruta, fuente), o `None` si no hay ninguna. Lo usa el
 /// frontend al abrirse para reflejar una grabación iniciada desde el tray.
 pub async fn get_active_recording() -> Option<ActiveRecording> {
-    current_recording_slot()
+    session_slot()
         .lock()
         .await
-        .clone()
-        .map(|(meeting_id, audio_path, source)| ActiveRecording {
-            meeting_id,
-            audio_path,
-            source,
+        .as_ref()
+        .map(|s| ActiveRecording {
+            meeting_id: s.meeting_id.clone(),
+            audio_path: s.audio_path.clone(),
+            source: s.source.clone(),
         })
+}
+
+/// Detiene de forma síncrona cualquier grabación activa y suelta el grabador.
+/// Se llama en el evento de salida de la app: al caer el `Arc<dyn
+/// AudioRecorder>` se dispara el `Drop` del helper de audio del sistema, que
+/// mata el proceso hijo. Sin esto, cerrar la app durante una grabación de
+/// sistema dejaba el helper capturando audio y el WAV corrupto.
+pub fn shutdown_recording() {
+    tauri::async_runtime::block_on(async {
+        let mut slot = session_slot().lock().await;
+        let _ = slot.take();
+    });
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -129,7 +173,7 @@ pub async fn tray_start_recording(
     app: tauri::AppHandle,
     source: String,
 ) -> Result<ActiveRecording, String> {
-    if current_recording_slot().lock().await.is_some() {
+    if session_slot().lock().await.is_some() {
         return Err("Ya hay una grabación en curso".to_string());
     }
 
@@ -154,14 +198,10 @@ pub async fn tray_start_recording(
 /// ícono de la barra de estado para parar sin abrir la app. Devuelve la
 /// reunión detenida para que el frontend abra su pipeline.
 pub async fn tray_stop_recording() -> Result<Option<ActiveRecording>, String> {
-    let active = current_recording_slot().lock().await.clone();
-    if let Some((meeting_id, audio_path, source)) = active {
-        stop_recording(meeting_id.clone()).await?;
-        Ok(Some(ActiveRecording {
-            meeting_id,
-            audio_path,
-            source,
-        }))
+    let active = get_active_recording().await;
+    if let Some(a) = active {
+        stop_recording(a.meeting_id.clone()).await?;
+        Ok(Some(a))
     } else {
         Ok(None)
     }
@@ -194,11 +234,15 @@ pub fn get_database() -> Result<Arc<MeetingRepositoryImpl>, String> {
             .map_err(|e| format!("Failed to initialize database: {}", e))?,
     );
 
-    DATABASE
-        .set(repo.clone())
-        .map_err(|_| "Failed to set database".to_string())?;
-
-    Ok(repo)
+    // Si dos comandos inicializan la BD a la vez, el que pierde la carrera no
+    // debe fallar: devuelve la instancia que sí quedó publicada.
+    match DATABASE.set(repo.clone()) {
+        Ok(()) => Ok(repo),
+        Err(_) => DATABASE
+            .get()
+            .cloned()
+            .ok_or_else(|| "Failed to initialize database".to_string()),
+    }
 }
 
 /// Carpeta de grabaciones escribible (`~/.resomer/recordings`). Se crea si no
@@ -217,21 +261,40 @@ fn recordings_dir() -> Result<PathBuf, String> {
     Ok(base)
 }
 
-/// Convierte la ruta recibida del frontend en una ruta absoluta escribible.
-/// Si es relativa, usa solo el nombre de archivo bajo `recordings_dir()`.
+/// Convierte la ruta recibida del frontend en una ruta absoluta escribible
+/// **dentro** de `~/.resomer/recordings`. Se rechaza cualquier ruta que escape
+/// de esa carpeta, para que una webview comprometida no pueda hacer que la app
+/// escriba un WAV en una ubicación arbitraria.
 fn resolve_recording_path(output_path: &str) -> Result<String, String> {
+    let base = recordings_dir()?;
     let p = PathBuf::from(output_path);
-    let abs = if p.is_absolute() {
+    let candidate = if p.is_absolute() {
         p
     } else {
         let name = p.file_name().map(PathBuf::from).unwrap_or(p);
-        recordings_dir()?.join(name)
+        base.join(name)
     };
-    if let Some(parent) = abs.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create recordings directory: {}", e))?;
+
+    let parent = candidate
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| base.clone());
+    std::fs::create_dir_all(&parent)
+        .map_err(|e| format!("Failed to create recordings directory: {}", e))?;
+
+    // El archivo aún no existe, así que canonicalizamos el directorio padre.
+    let canonical_base = base
+        .canonicalize()
+        .map_err(|e| format!("Invalid recordings directory: {}", e))?;
+    let canonical_parent = parent
+        .canonicalize()
+        .map_err(|e| format!("Invalid recording path: {}", e))?;
+    if !canonical_parent.starts_with(&canonical_base) {
+        return Err("Ruta de grabación fuera de la carpeta permitida".to_string());
     }
-    abs.to_str()
+
+    candidate
+        .to_str()
         .map(|s| s.to_string())
         .ok_or_else(|| "Ruta de grabación inválida".to_string())
 }
@@ -252,23 +315,12 @@ pub async fn start_recording(
     // Resolver a una ruta absoluta escribible (crea la carpeta si hace falta).
     let resolved_path = resolve_recording_path(&output_path)?;
 
-    // Update meeting in BD with audio path (or create if doesn't exist)
-    if let Ok(repo) = get_database() {
-        match repo.get(&meeting_id).await {
-            Ok(Some(mut meeting)) => {
-                meeting.audio_path = Some(resolved_path.clone());
-                meeting.state = MeetingState::Recording;
-                let _ = repo.update(meeting).await;
-            }
-            _ => {
-                // Create meeting if it doesn't exist
-                let mut meeting = Meeting::new("Reunión".to_string(), None);
-                meeting.id = meeting_id.clone();
-                meeting.audio_path = Some(resolved_path.clone());
-                meeting.state = MeetingState::Recording;
-                let _ = repo.create(meeting).await;
-            }
-        }
+    // Serializa el arranque: el lock se mantiene durante todo el arranque (que
+    // puede tardar en audio de sistema) para que dos peticiones simultáneas no
+    // puedan pasar ambas el chequeo `is_some`.
+    let mut slot = session_slot().lock().await;
+    if slot.is_some() {
+        return Err("Ya hay una grabación en curso".to_string());
     }
 
     // Select appropriate recorder based on source
@@ -297,58 +349,113 @@ pub async fn start_recording(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Store recorder in global state for later use
-    let recorder_state = RECORDER.get_or_init(|| Arc::new(Mutex::new(None)));
-    let mut state = recorder_state.lock().await;
-    *state = Some(recorder);
-    drop(state); // liberar el lock antes de tomar el siguiente
+    tracing::info!(meeting_id = %meeting_id, source = %source, "grabación iniciada");
 
-    // Marcar esta reunión como la grabación activa (fuente de verdad para el
-    // ícono de la barra de estado y para evitar solapamientos).
-    *current_recording_slot().lock().await =
-        Some((meeting_id.clone(), resolved_path.clone(), source.clone()));
+    // Persistir SOLO tras arrancar bien: si el arranque falla, la reunión no
+    // queda marcada "grabando" apuntando a un archivo que nunca se creó.
+    if let Ok(repo) = get_database() {
+        match repo.get(&meeting_id).await {
+            Ok(Some(mut meeting)) => {
+                meeting.audio_path = Some(resolved_path.clone());
+                meeting.state = MeetingState::Recording;
+                let _ = repo.update(meeting).await;
+            }
+            _ => {
+                // Create meeting if it doesn't exist
+                let mut meeting = Meeting::new("Reunión".to_string(), None);
+                meeting.id = meeting_id.clone();
+                meeting.audio_path = Some(resolved_path.clone());
+                meeting.state = MeetingState::Recording;
+                let _ = repo.create(meeting).await;
+            }
+        }
+    }
+
+    // Publicar la sesión (fuente de verdad para el tray y para rechazar
+    // solapamientos).
+    *slot = Some(RecordingSession {
+        meeting_id,
+        audio_path: resolved_path.clone(),
+        source,
+        recorder,
+    });
 
     Ok(resolved_path)
 }
 
 pub async fn stop_recording(meeting_id: String) -> Result<(), String> {
-    let recorder_state = RECORDER.get_or_init(|| Arc::new(Mutex::new(None)));
-    let mut state = recorder_state.lock().await;
+    // Sacar la sesión del lock antes de esperar al grabador (que puede tardar
+    // segundos en audio de sistema), para no serializar otras operaciones.
+    let session = {
+        let mut slot = session_slot().lock().await;
+        match slot.as_ref() {
+            None => return Ok(()),
+            Some(s) if s.meeting_id != meeting_id => {
+                return Err("La grabación activa no corresponde a esta reunión".to_string());
+            }
+            Some(_) => slot.take().expect("checked Some above"),
+        }
+    };
 
-    if let Some(recorder) = state.as_ref() {
-        recorder.stop_recording().await.map_err(|e| e.to_string())?;
+    let stop_result = session.recorder.stop_recording().await;
+    drop(session);
+
+    match &stop_result {
+        Ok(()) => tracing::info!(meeting_id = %meeting_id, "grabación detenida"),
+        Err(e) => {
+            tracing::error!(meeting_id = %meeting_id, error = %e, "fallo al detener la grabación")
+        }
     }
 
-    *state = None;
-    drop(state); // liberar el lock antes de tomar el siguiente
-
-    // Ya no hay grabación activa.
-    *current_recording_slot().lock().await = None;
-
     // La grabación terminó; el audio está en disco pero el pipeline
-    // (diarización/transcripción/resumen) aún no corrió.
+    // (diarización/transcripción/resumen) aún no corrió. Si el stop falló,
+    // marcamos error para no dejar la reunión "grabando" para siempre.
     if let Ok(repo) = get_database() {
         if let Ok(Some(mut meeting)) = repo.get(&meeting_id).await {
-            meeting.state = MeetingState::Processing;
+            meeting.state = match &stop_result {
+                Ok(()) => MeetingState::Processing,
+                Err(e) => MeetingState::Error(format!("Error al detener la grabación: {}", e)),
+            };
             let _ = repo.update(meeting).await;
         }
     }
 
-    Ok(())
+    stop_result.map_err(|e| e.to_string())
 }
 
 pub async fn pause_recording() -> Result<(), String> {
-    let recorder_state = RECORDER.get_or_init(|| Arc::new(Mutex::new(None)));
-    let state = recorder_state.lock().await;
+    let slot = session_slot().lock().await;
 
-    if let Some(recorder) = state.as_ref() {
-        recorder
+    if let Some(session) = slot.as_ref() {
+        session
+            .recorder
             .pause_recording()
             .await
             .map_err(|e| e.to_string())?;
     }
 
     Ok(())
+}
+
+/// Al arrancar la app no puede haber ninguna grabación activa. Si quedó alguna
+/// reunión en estado `recording` (p. ej. la app se cerró o crasheó a mitad de
+/// una grabación), la marca como error para que no aparezca "grabando" para
+/// siempre en la interfaz.
+pub async fn reconcile_interrupted_recordings() {
+    let Ok(repo) = get_database() else {
+        return;
+    };
+    let Ok(meetings) = repo.list().await else {
+        return;
+    };
+    for mut meeting in meetings {
+        if meeting.state == MeetingState::Recording {
+            meeting.state = MeetingState::Error(
+                "La grabación se interrumpió al cerrarse la aplicación.".to_string(),
+            );
+            let _ = repo.update(meeting).await;
+        }
+    }
 }
 
 pub fn list_audio_devices() -> Result<Vec<services::devices::AudioDevice>, String> {
@@ -368,7 +475,6 @@ pub async fn diarize_audio(
 
 pub async fn transcribe_audio(
     audio_path: String,
-    api_endpoint: String,
     model: String,
 ) -> Result<TranscriptionOutput, String> {
     // Obtener API key del keychain
@@ -376,7 +482,9 @@ pub async fn transcribe_audio(
         .map_err(|e| format!("Failed to get API key: {}", e))?
         .ok_or_else(|| "API key not configured".to_string())?;
 
-    let transcriber = CloudTranscriber::new(api_endpoint, api_key, model);
+    // El endpoint lo decide el backend (config), no el frontend.
+    let endpoint = ConfigManager::new().transcription_endpoint();
+    let transcriber = CloudTranscriber::new(endpoint, api_key, model);
     transcriber
         .transcribe_full(&audio_path)
         .await
@@ -395,7 +503,6 @@ pub fn attribute_speakers_to_transcript(
 
 pub async fn summarize_text(
     text: String,
-    api_endpoint: String,
     model: String,
     instructions: Option<String>,
 ) -> Result<String, String> {
@@ -404,7 +511,8 @@ pub async fn summarize_text(
         .map_err(|e| format!("Failed to get API key: {}", e))?
         .ok_or_else(|| "API key not configured".to_string())?;
 
-    let summarizer = LlmSummarizer::new(api_endpoint, api_key, model);
+    let endpoint = ConfigManager::new().chat_endpoint();
+    let summarizer = LlmSummarizer::new(endpoint, api_key, model);
     summarizer
         .summarize_with_instructions(&text, instructions.as_deref())
         .await
@@ -444,7 +552,8 @@ pub async fn save_transcript_results(
         let config = ConfigManager::new();
         let chunks = services::chunk_text(&transcript, 800);
         if !chunks.is_empty() {
-            let embed_client = services::EmbeddingClient::new(config.embeddings_endpoint(), api_key);
+            let embed_client =
+                services::EmbeddingClient::new(config.embeddings_endpoint(), api_key);
             if let Ok(vectors) = embed_client.embed(&chunks).await {
                 if vectors.len() == chunks.len() {
                     let pairs: Vec<(String, Vec<f32>)> = chunks.into_iter().zip(vectors).collect();
@@ -502,7 +611,9 @@ pub async fn get_meeting_data(meeting_id: String) -> Result<MeetingData, String>
 
     let segments = repo.get_segments(&meeting_id).map_err(|e| e.to_string())?;
 
-    let utterances = repo.get_utterances(&meeting_id).map_err(|e| e.to_string())?;
+    let utterances = repo
+        .get_utterances(&meeting_id)
+        .map_err(|e| e.to_string())?;
 
     let transcript = repo
         .get_transcript(&meeting_id)
@@ -544,7 +655,6 @@ pub async fn get_chat_history(meeting_id: String) -> Result<Vec<services::ChatMe
 pub async fn ask_meeting_question(
     meeting_id: String,
     question: String,
-    api_endpoint: String,
     model: String,
 ) -> Result<String, String> {
     let repo = get_database()?;
@@ -565,7 +675,8 @@ pub async fn ask_meeting_question(
         .map_err(|e| format!("Failed to get API key: {}", e))?
         .ok_or_else(|| "API key not configured".to_string())?;
 
-    let assistant = services::MeetingChatAssistant::new(api_endpoint, api_key, model);
+    let endpoint = ConfigManager::new().chat_endpoint();
+    let assistant = services::MeetingChatAssistant::new(endpoint, api_key, model);
     let answer = assistant
         .ask(&transcript, summary.as_deref(), &history, &question)
         .await
@@ -670,11 +781,7 @@ pub async fn update_meeting_category(
 /// Genera (con IA) un título para la reunión a partir de su resumen, o del
 /// transcript si aún no hay resumen, y lo persiste. Devuelve el título para que
 /// el frontend lo muestre sin recargar.
-pub async fn generate_meeting_title(
-    meeting_id: String,
-    api_endpoint: String,
-    model: String,
-) -> Result<String, String> {
+pub async fn generate_meeting_title(meeting_id: String, model: String) -> Result<String, String> {
     let repo = get_database()?;
 
     let source = match repo.get_summary(&meeting_id).map_err(|e| e.to_string())? {
@@ -689,7 +796,8 @@ pub async fn generate_meeting_title(
         .map_err(|e| format!("Failed to get API key: {}", e))?
         .ok_or_else(|| "API key not configured".to_string())?;
 
-    let summarizer = LlmSummarizer::new(api_endpoint, api_key, model);
+    let endpoint = ConfigManager::new().chat_endpoint();
+    let summarizer = LlmSummarizer::new(endpoint, api_key, model);
     let title = summarizer
         .generate_title(&source)
         .await
@@ -730,14 +838,18 @@ async fn find_relevant_sources(
 
     let mut scored: Vec<(f32, &services::ChunkRow)> = all_chunks
         .iter()
-        .map(|c| (services::cosine_similarity(&query_embedding, &c.embedding), c))
+        .map(|c| {
+            (
+                services::cosine_similarity(&query_embedding, &c.embedding),
+                c,
+            )
+        })
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
     scored.truncate(20);
 
     let documents: Vec<String> = scored.iter().map(|(_, c)| c.text.clone()).collect();
-    let rerank_client =
-        services::RerankClient::new(config.rerank_endpoint(), api_key.to_string());
+    let rerank_client = services::RerankClient::new(config.rerank_endpoint(), api_key.to_string());
     let reranked = rerank_client
         .rerank(query, &documents)
         .await
@@ -773,7 +885,6 @@ async fn find_relevant_sources(
 pub async fn ask_global_question(
     conversation_id: String,
     question: String,
-    api_endpoint: String,
     model: String,
 ) -> Result<GlobalAnswer, String> {
     let repo = get_database()?;
@@ -794,7 +905,8 @@ pub async fn ask_global_question(
         .get_global_chat_history(&conversation_id)
         .map_err(|e| e.to_string())?;
 
-    let assistant = services::GlobalAssistant::new(api_endpoint, api_key, model);
+    let endpoint = ConfigManager::new().chat_endpoint();
+    let assistant = services::GlobalAssistant::new(endpoint, api_key, model);
     let answer = assistant
         .ask(&sources, &history, &question)
         .await
@@ -851,7 +963,6 @@ mod manual_chat_verification {
         let answer = ask_meeting_question(
             meeting_id.clone(),
             "¿De qué trató esta reunión, en una frase?".to_string(),
-            "https://api.nan.builders/v1/chat/completions".to_string(),
             "mimo-v2.5".to_string(),
         )
         .await
@@ -945,5 +1056,24 @@ mod manual_delete_verification {
         );
 
         println!("Borrado en cascada verificado: audio + todas las tablas asociadas.");
+    }
+}
+
+#[cfg(test)]
+mod api_key_mask_tests {
+    use super::mask_api_key;
+
+    #[test]
+    fn masks_long_key_preserving_prefix_and_suffix() {
+        let masked = mask_api_key("sk-1234567890");
+        assert!(masked.starts_with("sk-"));
+        assert!(masked.ends_with("890"));
+        assert!(masked.contains('•'));
+        assert!(!masked.contains("1234"));
+    }
+
+    #[test]
+    fn masks_short_key_without_panicking() {
+        assert_eq!(mask_api_key("abc"), "•••");
     }
 }

@@ -25,6 +25,9 @@ recordings/
 # Logs
 *.log
 
+# Salida de herramientas locales de análisis
+graphify-out/
+
 # Claude Code / agent tooling (skill caches, local settings)
 .claude/
 .agents/

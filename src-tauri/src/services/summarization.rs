@@ -15,7 +15,7 @@ impl LlmSummarizer {
             api_endpoint,
             api_key,
             model,
-            client: reqwest::Client::new(),
+            client: crate::infra::http_client::build_client(),
         }
     }
 

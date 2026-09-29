@@ -3,6 +3,7 @@ import { ArrowDownAZ, ArrowUpAZ, ListMusic, Search } from "lucide-react"
 import { IconButton } from "../../../components/ui/IconButton"
 import { EmptyState } from "../../../components/ui/EmptyState"
 import { cn } from "../../../lib/cn"
+import { DEFAULT_CATEGORIES } from "../../../lib/meetings"
 import type { Meeting } from "../hooks/useMeetings"
 import { MeetingRow, meetingStateLabel } from "./MeetingRow"
 
@@ -17,7 +18,6 @@ const STATUS_FILTERS: { id: StatusFilter; label: string }[] = [
 ]
 
 const UNCATEGORIZED = "Sin categoría"
-const DEFAULT_CATEGORIES = ["Clientes", "Interno", "Personal"]
 const BUCKET_ORDER = ["Hoy", "Ayer", "Esta semana", "Este mes", "Anteriores"]
 
 function startOfDay(d: Date): number {

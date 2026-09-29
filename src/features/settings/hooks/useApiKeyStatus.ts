@@ -6,8 +6,8 @@ export function useApiKeyStatus() {
 
   const refresh = useCallback(async () => {
     try {
-      const key = await invoke<string | null>("get_api_key")
-      setHasKey(Boolean(key))
+      const status = await invoke<{ configured: boolean }>("get_api_key_status")
+      setHasKey(status.configured)
     } catch {
       setHasKey(false)
     }

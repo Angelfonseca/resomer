@@ -2,6 +2,7 @@ import { useMemo } from "react"
 import { AudioLines, CalendarClock, CheckCircle2, Mic, Sparkles, Workflow, Settings2, Folder } from "lucide-react"
 import { motion, AnimatePresence } from "motion/react"
 import { cn } from "../../lib/cn"
+import { DEFAULT_CATEGORIES, meetingStateTone, relativeTime } from "../../lib/meetings"
 import { StatusDot } from "../ui/StatusDot"
 import type { Meeting } from "../../features/meetings/hooks/useMeetings"
 import { useSidebarActivity } from "../../features/meetings/hooks/useSidebarActivity"
@@ -17,23 +18,6 @@ const NAV_ITEMS: { id: View; label: string; icon: typeof AudioLines }[] = [
   { id: "assistant", label: "Asistente", icon: Sparkles },
   { id: "settings", label: "Ajustes", icon: Settings2 },
 ]
-
-function relativeTime(iso: string): string {
-  const diffMs = Date.now() - new Date(iso).getTime()
-  const mins = Math.round(diffMs / 60000)
-  if (mins < 1) return "ahora"
-  if (mins < 60) return `hace ${mins} min`
-  const hours = Math.round(mins / 60)
-  if (hours < 24) return `hace ${hours} h`
-  return `hace ${Math.round(hours / 24)} d`
-}
-
-const meetingStateTone: Record<Meeting["state"], "signal" | "rec" | "done" | "idle"> = {
-  recording: "rec",
-  processing: "signal",
-  completed: "done",
-  error: "idle",
-}
 
 export function Sidebar({
   currentView,
@@ -56,7 +40,7 @@ export function Sidebar({
   const activity = useSidebarActivity(meetings)
 
   const availableCategories = useMemo(() => {
-    const set = new Set(["Clientes", "Interno", "Personal"])
+    const set = new Set(DEFAULT_CATEGORIES)
     for (const m of meetings) if (m.category) set.add(m.category)
     return [...set].sort((a, b) => a.localeCompare(b))
   }, [meetings])
