@@ -59,7 +59,7 @@ export function useGlobalChat(conversationId: string | undefined) {
   }, [conversationId])
 
   const ask = useCallback(
-    async (question: string, model = "mimo-v2.5") => {
+    async (question: string, model = "mimo-v2.6-flash") => {
       if (!conversationId || !question.trim()) return
       const requestedConv = conversationId
 

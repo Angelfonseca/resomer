@@ -16,6 +16,9 @@ import { Waveform } from "../../../components/ui/Waveform"
 interface RecordingPanelProps {
   meetingId: string
   onRecordingComplete?: (filePath: string, expectedSpeakers: number | null) => void
+  // Avisa al padre en cuanto el backend arranca la grabación, para que la
+  // considere activa aunque el usuario cambie de vista de inmediato.
+  onRecordingStarted?: (info: { meetingId: string; filePath: string; source: RecordingSource }) => void
   // Fuente preseleccionada (p. ej. cuando la grabación se lanza desde el
   // menú del ícono de la barra de estado con mic/sistema/ambos ya elegido).
   initialSource?: RecordingSource
@@ -41,6 +44,7 @@ const SOURCE_LABEL: Record<RecordingSource, string> = {
 export function RecordingPanel({
   meetingId,
   onRecordingComplete,
+  onRecordingStarted,
   initialSource = "microphone",
   attach = null,
   categories = [],
@@ -91,7 +95,8 @@ export function RecordingPanel({
     // No bloqueante: si el meetingId es local (sin fila en BD todavía), esto
     // falla en silencio — el valor sigue viajando en memoria hacia el pipeline.
     invoke("set_expected_speakers", { meetingId, expectedSpeakers }).catch(() => {})
-    await startRecording(meetingId, outputPath, selectedSource)
+    const filePath = await startRecording(meetingId, outputPath, selectedSource)
+    if (filePath) onRecordingStarted?.({ meetingId, filePath, source: selectedSource })
   }
 
   const handleStop = async () => {

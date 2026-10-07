@@ -76,6 +76,7 @@ export const useRecording = () => {
           durationMs: 0,
           startedAt: new Date().toISOString(),
         });
+        return resolvedPath;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setError(message);

@@ -98,7 +98,7 @@ export const usePipeline = (onMeetingUpdated?: () => void) => {
     async (
       audioPath: string,
       meetingId?: string,
-      apiModel = "mimo-v2.5",
+      apiModel = "mimo-v2.6-flash",
       transcriptionModel = "whisper",
       numSpeakers?: number | null,
       meetingLabel = "Reunión"
@@ -242,7 +242,7 @@ export const usePipeline = (onMeetingUpdated?: () => void) => {
   // (p. ej. "enfócate en las decisiones técnicas", "más breve") y se manda tal
   // cual al prompt del backend.
   const regenerateSummary = useCallback(
-    async (meetingId: string, instructions?: string, model = "mimo-v2.5") => {
+    async (meetingId: string, instructions?: string, model = "mimo-v2.6-flash") => {
       const transcript = stateRef.current.transcript
       if (!transcript) return
       setRegenerating(true)

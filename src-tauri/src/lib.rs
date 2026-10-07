@@ -80,7 +80,7 @@ pub async fn test_connection() -> Result<TestConnectionResponse, String> {
         .post(&endpoint)
         .header("Authorization", format!("Bearer {}", api_key))
         .json(&serde_json::json!({
-            "model": "mimo-v2.5",
+            "model": "mimo-v2.6-flash",
             "messages": [{"role": "user", "content": "ping"}],
             "max_tokens": 10
         }))
@@ -963,7 +963,7 @@ mod manual_chat_verification {
         let answer = ask_meeting_question(
             meeting_id.clone(),
             "¿De qué trató esta reunión, en una frase?".to_string(),
-            "mimo-v2.5".to_string(),
+            "mimo-v2.6-flash".to_string(),
         )
         .await
         .expect("ask_meeting_question failed");

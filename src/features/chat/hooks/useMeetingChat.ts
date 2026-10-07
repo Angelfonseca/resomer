@@ -40,7 +40,7 @@ export function useMeetingChat(meetingId: string | undefined) {
   }, [meetingId])
 
   const ask = useCallback(
-    async (question: string, model = "mimo-v2.5") => {
+    async (question: string, model = "mimo-v2.6-flash") => {
       if (!meetingId || !question.trim()) return
 
       setError(null)

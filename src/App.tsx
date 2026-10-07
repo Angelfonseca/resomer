@@ -15,6 +15,9 @@ import { MeetingsView } from "./features/meetings/components/MeetingsView"
 import { AssistantView } from "./features/chat"
 import { DEFAULT_CATEGORIES } from "./lib/meetings"
 
+// Forma de la grabación activa tal como la devuelve el backend (camelCase).
+type ActiveRecording = { meetingId: string; audioPath: string; source: RecordingSource }
+
 const VIEW_META: Record<View, { title: string; subtitle?: string }> = {
   studio: { title: "Studio", subtitle: "Tu espacio de trabajo de reuniones" },
   recording: { title: "Grabar", subtitle: "Configura la fuente y comienza a grabar" },
@@ -70,8 +73,30 @@ function App() {
     if (currentView === "studio" || currentView === "meetings") refreshMeetings()
   }, [currentView, refreshMeetings])
 
+  // Adopta una grabación que ya corre en el backend: vuelve a la vista de
+  // grabación sin crear otra reunión ni reiniciar el grabador.
+  const followRecording = useCallback((a: ActiveRecording) => {
+    setActiveMeetingId(a.meetingId)
+    setExpectedSpeakers(null)
+    setTrayError(null)
+    // La reunión que se está grabando aún no tiene pipeline; descarta el del
+    // audio anterior para no mezclar su id con la ruta vieja.
+    setLastRecordingPath(null)
+    setMirror({ meetingId: a.meetingId, filePath: a.audioPath, source: a.source })
+    setCurrentView("recording")
+  }, [])
+
   const beginNewRecording = useCallback(
     async (source: RecordingSource = "microphone", category: string | null = null) => {
+      // Si el backend ya tiene una grabación en curso (no importa si se inició
+      // desde el tray o desde esta misma pantalla), seguirla. Crear otra aquí
+      // cerraba la actual en la UI y dejaba el grabador corriendo sin control.
+      const active = await invoke<ActiveRecording | null>("get_active_recording").catch(() => null)
+      if (active) {
+        followRecording(active)
+        return
+      }
+
       const label = `Reunión ${meetings.length + 1}`
       setExpectedSpeakers(null)
       setRecordingSource(source)
@@ -89,7 +114,7 @@ function App() {
       }
       setCurrentView("recording")
     },
-    [meetings.length, createMeeting]
+    [meetings.length, createMeeting, followRecording]
   )
 
   // Navegación desde la barra lateral. Si se entra a "Grabar" sin una
@@ -139,18 +164,7 @@ function App() {
       promise.then((un) => (cancelled ? un() : unlisteners.push(un)))
     }
 
-    type ActiveRecording = { meetingId: string; audioPath: string; source: RecordingSource }
-
-    const enterMirror = (a: ActiveRecording) => {
-      setActiveMeetingId(a.meetingId)
-      setExpectedSpeakers(null)
-      setTrayError(null)
-      // La reunión que se está grabando aún no tiene pipeline; descarta el del
-      // audio anterior para no mezclar su id con la ruta vieja.
-      setLastRecordingPath(null)
-      setMirror({ meetingId: a.meetingId, filePath: a.audioPath, source: a.source })
-      setCurrentView("recording")
-    }
+    const enterMirror = followRecording
 
     // El backend arrancó una grabación desde el tray → reflejarla en curso.
     register(listen<ActiveRecording>("recording-started", (e) => enterMirror(e.payload)))
@@ -236,7 +250,7 @@ function App() {
       document.removeEventListener("visibilitychange", onVisible)
       window.clearInterval(interval)
     }
-  }, [lastRecordingPath, refreshMeetings])
+  }, [lastRecordingPath, refreshMeetings, followRecording])
 
   const meta = VIEW_META[currentView]
 
@@ -290,8 +304,11 @@ function App() {
           />
         )}
 
-        {currentView === "recording" && (
-          <div className="mx-auto w-full max-w-2xl">
+        {/* El panel se mantiene montado mientras hay una grabación en curso,
+            aunque cambies de vista: así el cronómetro, el medidor y el botón de
+            detener siguen ahí al volver, en vez de reiniciarse. */}
+        {(currentView === "recording" || mirror) && (
+          <div className={currentView === "recording" ? "mx-auto w-full max-w-2xl" : "hidden"}>
             <RecordingPanel
               meetingId={mirror?.meetingId ?? activeMeetingId ?? localMeetingId}
               initialSource={mirror?.source ?? recordingSource}
@@ -299,6 +316,7 @@ function App() {
               categories={availableCategories}
               onSetCategory={setMeetingCategory}
               initialCategory={activeMeetingId ? meetings.find((m) => m.id === activeMeetingId)?.category : null}
+              onRecordingStarted={setMirror}
               onRecordingComplete={(filePath, speakers) => {
                 setMirror(null)
                 setLastRecordingPath(filePath)
